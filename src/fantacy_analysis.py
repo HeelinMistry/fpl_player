@@ -587,6 +587,7 @@ def calculate_multi_window_matr(player_momentum: Dict[int, Dict[str, float | int
         if player_id not in master_report:
             master_report[player_id] = {
                 'player_name': player_info.get('web_name', f"ID {player_id}"),
+                'id': player_id,
                 'element_type_id': player_info.get('element_type'),
                 'team': team_short_names.get(team_id, "UNK"),
                 'fdr_score': fixture_run_score.get(team_id, 999),

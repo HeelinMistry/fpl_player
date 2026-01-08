@@ -34,18 +34,21 @@ def report_mgo_strategy(
     # --- Iterate through each Gameweek in the MGO Horizon ---
     for t_current in mgo_gw_ids:
         report = {}
+        squad_ids = set()
 
-        # 1. Determine the SQUAD (X) - Always based on the optimal result
-        squad_ids = {
-            i for i in current_squad_ids
-            if value(variables.get(f"X_{i}_{t_current}", 0)) > 0.5
-        }
-        current_squad_ids = squad_ids  # Update the tracker for the next GW's report
+        # Check ALL PLAYERS in the MGO universe for their status (X) in the current GW
+        # (Assuming PLAYERS is the comprehensive list of MGO players used in the model)
+        for i in player_map.keys():  # Loop over the entire player universe
+            x_key = f"X_{i}_{t_current}"
+            if x_key in variables and value(variables[x_key]) > 0.5:
+                squad_ids.add(i)
+
+        # This squad_ids set MUST contain exactly 15 player IDs now.
 
         # 2. Determine STARTING XI and Captain (S, C)
         starting_xi = []
         captain_id = None
-        for i in squad_ids:
+        for i in squad_ids:  # Loop only over the 15 players currently owned
             s_key = f"S_{i}_{t_current}"
             c_key = f"C_{i}_{t_current}"
 

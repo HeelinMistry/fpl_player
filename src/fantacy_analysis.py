@@ -529,10 +529,30 @@ def get_available_player_ids(bootstrap_data: Dict[str, Any]) -> Set[int]:
     return relevant_ids
 
 
+def get_all_player_ids(bootstrap_data: Dict[str, Any]) -> Set[int]:
+    """
+       Filters players based on FPL relevance metrics and returns a set of their IDs.
+       Criteria: Total Points >= 20 AND Form > 3.0
+       """
+    all_players = bootstrap_data['elements']
+    relevant_ids = set()
+
+    for player in all_players:
+        try:
+            relevant_ids.add(player['id'])
+        except (ValueError, TypeError):
+            # Skip players with malformed point/form data
+            continue
+    return relevant_ids
+
+
 MOMENTUM_WINDOWS = [3, 6, 9]
 def calculate_momentum_scores(player_history_data: Dict[int, List[Dict[str, Any]]],
                               current_gw: int) -> Dict[int, Dict[str, float | int]]:
-    """Calculates Points Per Match (PPM) for individual players over defined windows."""
+    """
+    Calculates Points Per 90 Minutes (PP90M) for individual players over defined windows,
+    using minutes played for a more accurate efficiency measure.
+    """
 
     player_momentum: Dict[int, Dict[str, float | int]] = {}
 
@@ -549,18 +569,26 @@ def calculate_momentum_scores(player_history_data: Dict[int, List[Dict[str, Any]
             # Select the most recent 'window' number of finished gameweeks
             recent_history = finished_history[-window:]
 
-            # Count games played (minutes > 0)
-            games_played = sum(1 for h in recent_history if h.get('minutes', 0) > 0)
+            # New: Sum total minutes and total points
+            total_minutes = sum(h.get('minutes', 0) for h in recent_history)
             total_points = sum(h.get('total_points', 0) for h in recent_history)
 
-            if games_played > 0:
-                ppm_score = total_points / games_played
-            else:
-                ppm_score = 0.0
+            # Count games played (useful for diagnostics)
+            games_played = sum(1 for h in recent_history if h.get('minutes', 0) > 0)
 
-            player_momentum[player_id][f'GW{window}_PPM'] = round(ppm_score, 2)
+            # --- CORRECTED PP90M LOGIC ---
+            if total_minutes > 0:
+                # Calculate PP90M: (Total Points / Total Minutes) * 90
+                # This correctly accounts for players who play < 90 minutes across the window.
+                pp90m_score = (total_points / total_minutes) * 90
+            else:
+                # If total_minutes is 0 (player was absent/not in the squad), set score to 0.
+                pp90m_score = 0.0
+            # Update the dictionary keys to reflect the PP90M calculation
+            player_momentum[player_id][f'GW{window}_PP90M'] = round(pp90m_score, 2)
             player_momentum[player_id][f'GW{window}_Pts'] = total_points
             player_momentum[player_id][f'GW{window}_Games'] = games_played
+            player_momentum[player_id][f'GW{window}_Mins'] = total_minutes  # New: Track total minutes
 
     return player_momentum
 
@@ -598,7 +626,7 @@ def calculate_multi_window_matr(player_momentum: Dict[int, Dict[str, float | int
         team_fdr_score = master_report[player_id]['fdr_score']
 
         for window in MOMENTUM_WINDOWS:
-            ppm_key_from_momentum = f'GW{window}_PPM'  # e.g., 'GW6_PPM'
+            ppm_key_from_momentum = f'GW{window}_PP90M'  # e.g., 'GW6_PP90M'
             games_key = f'GW{window}_Games'
 
             # Key to store the data in the report
@@ -684,6 +712,7 @@ def generate_momentum_report(team_momentum_report: List[Dict[str, Any]],
 
 
 # --- NEW CORE LOGIC: CALCULATE FUTURE DIFFICULTY ---
+DECAY_BASE = 0.5
 def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
                                 bootstrap_data: Dict[str, Any],
                                 current_gw: int,
@@ -704,6 +733,15 @@ def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
         window_size = 5
     end_gw = current_gw + int(window_size)
 
+    decay_weights = {
+        # gw_index is the number of weeks ahead (k)
+        # For start_gw (k=0), weight is 0.5^0 = 1.0 (Full weight)
+        # For start_gw + 1 (k=1), weight is 0.5^1 = 0.5
+        # For start_gw + 2 (k=2), weight is 0.5^2 = 0.25
+        gw: DECAY_BASE ** (gw - start_gw)
+        for gw in range(start_gw, end_gw + 1)
+    }
+
     # 1. Filter fixtures to the upcoming window
     upcoming_fixtures = [
         f for f in fixtures_data
@@ -716,24 +754,30 @@ def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
         if fixture.get('finished', False) or not fixture.get('event'):
             continue
 
+        gw = fixture['event']
+        weight = decay_weights.get(gw, 0)  # Get the time-decay weight for this GW
+
+        if weight == 0:
+            continue
+
         team_h = fixture['team_h']
         team_a = fixture['team_a']
 
-        # Home team: Difficulty against team_a
-        team_fixture_scores[team_h].append(fixture['team_h_difficulty'])
+        # Home team: Apply the weight to the difficulty score
+        # Note: We are calculating the weighted SUM of difficulty.
+        weighted_h_difficulty = fixture['team_h_difficulty'] * weight
+        team_fixture_scores[team_h].append(weighted_h_difficulty)
 
-        # Away team: Difficulty against team_h
-        team_fixture_scores[team_a].append(fixture['team_a_difficulty'])
+        # Away team: Apply the weight to the difficulty score
+        weighted_a_difficulty = fixture['team_a_difficulty'] * weight
+        team_fixture_scores[team_a].append(weighted_a_difficulty)
 
-    # 3. Calculate the total (sum) difficulty for the fixture run
+        # 3. Calculate the total (sum) weighted difficulty for the fixture run
     fixture_run_score: Dict[int, float] = {}
 
     for team_id, scores in team_fixture_scores.items():
-        # Sum the difficulty scores. A lower sum is a better (easier) run.
+        # Sum the weighted difficulty scores. The lower the sum, the better (easier and sooner).
         fixture_run_score[team_id] = sum(scores)
-
-        # Optional: Normalize the score if the team has played fewer than 'window' games (e.g., due to blanks)
-        # For simplicity, we will just use the sum of difficulties for scheduled games.
 
     return fixture_run_score
 
@@ -971,3 +1015,59 @@ def generate_over_under_reports(achiever_report: List[Dict[str, Any]], fdr_windo
             p['total_points']
         ))
     print("-" * 130)
+
+
+def calculate_s_matr_score(matr_rating: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Calculates the Stability-Weighted MATR (S-MATR) by adjusting the GW6 MATR
+    based on consistency/inconsistency observed in GW3 and GW9 windows.
+
+    The function assumes that 'matr_score_gw6', 'matr_score_gw3', and 'matr_score_gw9'
+    already exist in the matr_rating list items.
+    """
+
+    ADJUSTMENT_THRESHOLDS = 0.20  # 20% deviation from GW6 score triggers a factor
+    STABILITY_BONUS = 0.03  # 3% bonus for high stability
+    GW3_PENALTY_RATE = 0.02  # 2% penalty for high short-term variance
+    GW9_PENALTY_RATE = 0.05  # 5% penalty for high long-term variance (more weight on long-term)
+
+    for player in matr_rating:
+        matr_6 = player.get('matr_score_gw6', 0.0)
+        matr_3 = player.get('matr_score_gw3', 0.0)
+        matr_9 = player.get('matr_score_gw9', 0.0)
+
+        # Initialize adjustment factor
+        adjustment_factor = 1.0
+
+        if matr_6 > 0:
+
+            # --- 1. Check for Inconsistency (Penalty) ---
+
+            # Calculate absolute deviations
+            diff_3 = abs(matr_3 - matr_6)
+            diff_9 = abs(matr_9 - matr_6)
+
+            # Apply Penalty for High Variance
+            if diff_3 > (ADJUSTMENT_THRESHOLDS * matr_6):
+                # Penalize if GW3 score deviates too much from GW6 (cooling off/unsustainable spike)
+                adjustment_factor -= GW3_PENALTY_RATE
+
+            if diff_9 > (ADJUSTMENT_THRESHOLDS * matr_6):
+                # Penalize if GW9 score deviates too much from GW6 (form is highly unusual for their baseline)
+                adjustment_factor -= GW9_PENALTY_RATE
+
+                # --- 2. Check for Stability (Bonus) ---
+
+            # Use a tighter threshold for the stability bonus (e.g., 10% deviation)
+            STABILITY_THRESHOLD = 0.10
+            if (abs(matr_3 - matr_6) < (STABILITY_THRESHOLD * matr_6) and
+                    abs(matr_9 - matr_6) < (STABILITY_THRESHOLD * matr_6)):
+
+                # Apply bonus only if no significant penalties were applied
+                if adjustment_factor >= 1.0:
+                    adjustment_factor += STABILITY_BONUS
+
+        # Apply the final S-MATR score
+        player['s_matr_score'] = round(matr_6 * adjustment_factor, 4)
+
+    return matr_rating

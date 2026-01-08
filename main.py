@@ -7,7 +7,7 @@ from src.fantacy_api import get_fpl_data
 from src.fantacy_logger import setup_user_output
 
 PLAYER_DIR = 'player_history_dumps'
-FDR_WINDOW = 5
+FDR_WINDOW = 3
 def print_matr(fpl_data, fixtures_data):
     current_gw = get_current_gameweek_info(fpl_data)
 
@@ -52,103 +52,6 @@ def print_matr(fpl_data, fixtures_data):
         over_under_score = calculate_multi_window_over_under_achiever_score(adjusted_rating)
         generate_over_under_reports(over_under_score, fdr_window=FDR_WINDOW)
 
-def print_momentum(fpl_data):
-    if not os.path.exists(PLAYER_DIR):
-        os.makedirs(PLAYER_DIR)
-        print(f"Created directory: {PLAYER_DIR}")
-    relevant_ids = get_relevant_player_ids(fpl_data)
-
-    # Output the IDs found
-    print(f"Found {len(relevant_ids)} relevant player IDs for history fetching.")
-
-    # --- STEP 2: FETCH HISTORY FOR EACH ID ---
-
-    # We need the current Gameweek to ensure our momentum windows are correct
-    events_data = fpl_data['events']
-    current_gw = next((event['id'] for event in events_data if event['is_current']), None)
-
-    if not current_gw:
-        print("Could not determine current Gameweek. Aborting history fetch.")
-        relevant_ids = set()  # Clear IDs to stop the next step
-
-    # Prepare to store the history data
-    player_history_data: Dict[int, List[Dict[str, Any]]] = {}
-
-    # Using a subset of IDs for demonstration/API safety if the full list is huge
-    ids_to_fetch = list(relevant_ids)
-    print(f"Fetching history for {len(ids_to_fetch)} players...")
-
-    for player_id in ids_to_fetch:
-        history_endpoint = f"element-summary/{player_id}/"
-        player_summary = get_fpl_data(history_endpoint)
-
-        if player_summary and 'history' in player_summary:
-            file_path = os.path.join(PLAYER_DIR, f'fpl_{player_id}_data.json')
-            try:
-                with open(file_path, 'w') as f:
-                    json.dump(player_summary, f, indent=4)
-                # print(f"Player data saved to {file_path}")
-            except IOError as e:
-                print(f"Error saving file for player {player_id}: {e}")
-            # Store only the 'history' part which contains GW-by-GW data
-            player_history_data[player_id] = player_summary['history']
-
-    print(f"Successfully fetched history for {len(player_history_data)} players.")
-
-    player_momentum = calculate_momentum_scores(player_history_data, current_gw)
-    TOP_N = 3  # We choose the top 3 players' PPM to define the team's momentum score
-
-    for window in MOMENTUM_WINDOWS:
-        team_momentum_report = aggregate_team_momentum(
-            player_momentum,
-            fpl_data,
-            num_assets=TOP_N,
-            window=window
-        )
-        generate_momentum_report(team_momentum_report, window, TOP_N)
-
-    # 5. Show Top Player Momentum (The individual component)
-
-    # Filter for players who played in the last 6 GWs and sort by GW6 PPM
-    top_individual_momentum = sorted(
-        [p for p in player_momentum.values() if p.get('GW6_Games', 0) > 0],
-        key=lambda p: p.get('GW6_PPM', 0.0),
-        reverse=True
-    )[:15]
-
-    print("\n--- ⭐ Top 15 Individual Player Momentum (Last 6 GWs) ---")
-    print("-" * 65)
-    print("{:<15} {:<5} {:<8} {:<8} {:<8} {:<8}".format(
-        "Player", "Team", "GW3 PPM", "GW6 PPM", "GW9 PPM", "Total Pts"
-    ))
-    print("-" * 65)
-
-    # Create a reverse lookup for names from player ID
-    player_names = {p['id']: p['web_name'] for p in fpl_data.get('elements', [])}
-    team_short_names = {t['id']: t['short_name'] for t in fpl_data.get('teams', [])}
-    player_team_map = {p['id']: p['team'] for p in fpl_data.get('elements', [])}
-
-    for p_data in top_individual_momentum:
-        player_id = p_data['id']
-        team_id = player_team_map.get(player_id)
-
-        # Fetch total season points from bootstrap data (or estimate)
-        try:
-            total_pts = next(p['total_points'] for p in fpl_data['elements'] if p['id'] == player_id)
-        except StopIteration:
-            total_pts = "N/A"
-
-        print("{:<15} {:<5} {:<8.2f} {:<8.2f} {:<8.2f} {:<8}".format(
-            player_names.get(player_id, f"ID {player_id}"),
-            team_short_names.get(team_id, "UNK"),
-            p_data.get('GW3_PPM', 0.0),
-            p_data.get('GW6_PPM', 0.0),
-            p_data.get('GW9_PPM', 0.0),
-            total_pts
-        ))
-    print("-" * 65)
-
-
 def print_core():
     # 1. Define the endpoint to use
     fpl_endpoint = "bootstrap-static/"
@@ -170,9 +73,6 @@ def print_core():
         generate_team_strength_report(fpl_data, sort_by='FPL_POINTS')
         generate_team_strength_report(fpl_data, sort_by='ATTACK')
         generate_team_strength_report(fpl_data, sort_by='FDR_DEF')
-
-        # print_momentum(fpl_data)
-
 
         next_gw_info = get_next_gameweek_info(fpl_data)
         if not next_gw_info:

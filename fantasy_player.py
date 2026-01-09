@@ -6,7 +6,7 @@ from src.fantacy_analysis import *
 from src.fantacy_analysis import get_available_player_ids
 from src.fantacy_api import get_fpl_data
 
-MANAGER_ID = 4794135
+MANAGER_ID = 79432
 
 def get_initial_squad_from_fpl(manager_id: int, current_gw: int) -> tuple[list[int], float, float, int]:
     cache_filename = 'fpl_manager_xi_data.json'
@@ -75,11 +75,10 @@ if __name__ == '__main__':
 
     initial_squad_ids, money_itb, total_team_value, initial_fts = get_initial_squad_from_fpl(MANAGER_ID, current_gw['id'])
 
-    next_gw_info = get_next_gameweek_info(fpl_data)
-    if not next_gw_info:
+    if not current_gw:
         print("Could not identify the next gameweek. It might be the end of the season.")
     else:
-        gw_id = next_gw_info['id']
+        gw_id = current_gw['id']
         print(f"✅ Next Gameweek Identified: **Gameweek {gw_id}**")
 
         fixtures_data = None
@@ -101,6 +100,7 @@ if __name__ == '__main__':
         all_player_ids = get_all_player_ids(fpl_data)
         matr_rating = calculate_matr(fpl_data, fixtures_data, all_player_ids)
         adjusted_matr_rating = calculate_s_matr_score(matr_rating)
+        optimised_player_data = prepare_optimization_data(adjusted_matr_rating, fpl_data)
 
         print(f"\n--- ✅ GW{gw_id} Optimal Squad Selected. Moving to MGO... ---")
         print(f"\n--- {initial_squad_ids} ---")
@@ -156,7 +156,8 @@ if __name__ == '__main__':
                 problem=mgo_problem,
                 all_player_data=fpl_data.get('elements', []),  # Assuming fpl_data is your main data source
                 mgo_gw_ids=all_gws,
-                initial_squad_ids=initial_squad_ids
+                optimised_player_data=optimised_player_data,
+                mgo_scores=mgo_scores,
             )
         else:
             print("MGO failed to find an optimal solution.")

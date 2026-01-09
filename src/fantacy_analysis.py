@@ -1,3 +1,4 @@
+import collections
 from typing import Dict, Any, List, Set
 
 
@@ -1071,3 +1072,67 @@ def calculate_s_matr_score(matr_rating: List[Dict[str, Any]]) -> List[Dict[str, 
         player['s_matr_score'] = round(matr_6 * adjustment_factor, 4)
 
     return matr_rating
+
+
+def analyze_gameweek_fixtures(fixtures_data: List[Dict[str, Any]], team_names_map: Dict[int, str]):
+    """
+    Analyzes fixture data to identify total fixtures per GW and teams with DGWs.
+
+    Args:
+        fixtures_data: List of all fixtures.
+        team_names_map: Dictionary mapping team ID to team name (e.g., {1: 'ARS'}).
+
+    Returns:
+        A dictionary containing the analysis results.
+    """
+
+    # 1. Initialize counters
+    total_fixtures_by_gw: Dict[int, int] = collections.defaultdict(int)
+    team_fixtures_by_gw: Dict[int, Dict[int, int]] = collections.defaultdict(lambda: collections.defaultdict(int))
+
+    # 2. Populate counters
+    for fixture in fixtures_data:
+        gw = fixture.get('event')
+        team_h = fixture.get('team_h')
+        team_a = fixture.get('team_a')
+
+        if gw is not None:
+            # Count total fixtures in the Gameweek
+            total_fixtures_by_gw[gw] += 1
+
+            # Count fixtures per team in the Gameweek
+            if team_h is not None:
+                team_fixtures_by_gw[gw][team_h] += 1
+            if team_a is not None:
+                team_fixtures_by_gw[gw][team_a] += 1
+
+    # 3. Process results to find DGWs and the peak GW
+    fixture_analysis = {}
+
+    peak_gw = -1
+    max_fixtures = -1
+
+    for gw, total_fixtures in total_fixtures_by_gw.items():
+
+        # Track the largest Gameweek
+        if total_fixtures > max_fixtures:
+            max_fixtures = total_fixtures
+            peak_gw = gw
+
+        # Identify teams with a DGW (or TGW, Triple Gameweek)
+        double_gameweek_teams = []
+        for team_id, fixture_count in team_fixtures_by_gw[gw].items():
+            if fixture_count > 1:
+                team_name = team_names_map.get(team_id, f"ID {team_id}")
+                double_gameweek_teams.append((team_name, fixture_count))
+
+        fixture_analysis[gw] = {
+            'total_fixtures': total_fixtures,
+            'teams_with_multiple_fixtures': sorted(double_gameweek_teams, key=lambda x: x[1], reverse=True)
+        }
+
+    return {
+        'peak_gw_id': peak_gw,
+        'max_fixtures': max_fixtures,
+        'gameweek_details': fixture_analysis
+    }

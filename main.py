@@ -29,8 +29,22 @@ def print_matr(fpl_data, fixtures_data):
         print(f"Fetching history for {len(ids_to_fetch)} players...")
 
         for player_id in ids_to_fetch:
-            history_endpoint = f"element-summary/{player_id}/"
-            player_summary = get_fpl_data(history_endpoint)
+            cache_player_filename = f'fpl_player_{player_id}_data.json'
+            player_summary = None
+            file_path = os.path.join(PLAYER_DIR, cache_player_filename)
+
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    player_summary = json.load(f)
+                    print(f"✅ Data loaded successfully from local cache: {file_path}")
+
+            if player_summary is None:
+                history_endpoint = f"element-summary/{player_id}/"
+                player_summary = get_fpl_data(history_endpoint)
+
+                with open(file_path, 'w') as f:
+                    json.dump(player_summary, f, indent=4)
+                print(f"\nData saved to {file_path}")
 
             if player_summary and 'history' in player_summary:
                 file_path = os.path.join(PLAYER_DIR, f'fpl_{player_id}_data.json')
@@ -84,15 +98,23 @@ def print_core():
             print(f"✅ Next Gameweek Identified: **Gameweek {gw_id}**")
             print(f"   Transfer Deadline: **{gw_deadline} (UTC)**")
 
-            # 2. Second Call: Get Fixtures for the specific GW ID
-            fixtures_endpoint = f"fixtures/?event={gw_id}"
-            fixtures_data = get_fpl_data(fixtures_endpoint)
+            fixtures_data = None
+            cache_fixture_filename = 'fpl_fixture_data.json'
+
+            if os.path.exists(cache_fixture_filename):
+                with open(cache_fixture_filename, 'r') as f:
+                    fixtures_data = json.load(f)
+                    print(f"✅ Data loaded successfully from local cache: {cache_fixture_filename}")
+
+            if fixtures_data is None:
+                fixtures_endpoint = "fixtures"
+                fixtures_data = get_fpl_data(fixtures_endpoint)
+
+                with open(cache_fixture_filename, 'w') as f:
+                    json.dump(fixtures_data, f, indent=4)
+                print(f"\nData saved to {cache_fixture_filename}")
 
             if fixtures_data:
-                with open('fpl_fixture_data.json', 'w') as f:
-                    json.dump(fixtures_data, f, indent=4)
-                print("\nData saved to fpl_fixture_data.json")
-
                 teams_data = fpl_data['teams']
                 view_gameweek_fixtures(gw_id, fixtures_data, teams_data)
                 playing_team_ids = get_next_gw_teams(fpl_data, fixtures_data)
@@ -100,6 +122,21 @@ def print_core():
                 get_value_players_next_gw(fpl_data, playing_team_ids, top_n=25)
 
                 print_matr(fpl_data, fixtures_data)
+                analysis_result = analyze_gameweek_fixtures(fixtures_data, teams_data)
+
+                # --- Reporting ---
+                print(f"## 📊 Fixture Analysis Results")
+                print(
+                    f"The Gameweek with the most fixtures is **GW {analysis_result['peak_gw_id']}** with {analysis_result['max_fixtures']} fixtures.")
+                print("---")
+                print("### Double/Triple Gameweek Details")
+                for gw, details in analysis_result['gameweek_details'].items():
+                    if details['total_fixtures'] < 10:  # Likely a Blank Gameweek (BGW)
+                        print(f"**GW {gw}:** 🚨 Blank Gameweek (Only {details['total_fixtures']} fixtures)")
+                    elif details['teams_with_multiple_fixtures']:
+                        dgw_teams = [f"{team} ({count})" for team, count in details['teams_with_multiple_fixtures']]
+                        print(f"**GW {gw}:** ⭐ Double Gameweek (DGW) - {', '.join(dgw_teams)}")
+
             else:
                 print("Failed to load fixtures data.")
 

@@ -6,12 +6,19 @@ from typing import Dict, Any, Tuple
 from src.fantacy_analysis import *
 from src.fantacy_api import get_fpl_data
 
+def get_player_data_for_xi(player_id: int, player_data: Dict[int, Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Utility to safely retrieve a COPY of a player's full data dictionary by ID."""
+    if player_id in player_data:
+        player_details = player_data[player_id]
+        return player_details.copy()
+    return None
 
 def report_mgo_strategy(
         problem: LpProblem,
         all_player_data: List[Dict[str, Any]],
         mgo_gw_ids: List[int],
-        initial_squad_ids: List[int]
+        optimised_player_data: Dict[int, Dict[str, Any]],
+        mgo_scores: Dict[tuple, float]
 ):
     """
     Analyzes the solved MGO problem to report the optimal strategy across the horizon.
@@ -21,47 +28,57 @@ def report_mgo_strategy(
         return
 
     # --- Setup Mapping and Variables ---
-    player_map = {p['id']: p.get('web_name', f"ID {p['id']}") for p in all_player_data}
-
-    # Extract PuLP Variables (accessing the variables dictionary by name and index)
+    player_map = {p['id']: p.get('name', f"ID {p['id']}") for p in optimised_player_data.values()}
     variables = problem.variablesDict()
-
-    # Lists to store aggregated information
     gameweek_reports = collections.OrderedDict()
-
-    # --- Initial Squad (Before any transfers are made) ---
-    current_squad_ids = set(initial_squad_ids)
 
     # --- Iterate through each Gameweek in the MGO Horizon ---
     for t_current in mgo_gw_ids:
         report = {}
         squad_ids = set()
+        optimal_squad_data = []
 
-        # Check ALL PLAYERS in the MGO universe for their status (X) in the current GW
-        # (Assuming PLAYERS is the comprehensive list of MGO players used in the model)
         for i in player_map.keys():  # Loop over the entire player universe
             x_key = f"X_{i}_{t_current}"
+            score_key = (i, t_current)
             if x_key in variables and value(variables[x_key]) > 0.5:
-                squad_ids.add(i)
+                # squad_ids.add(i)
+                player_details = get_player_data_for_xi(i, optimised_player_data)
+                if player_details:
+                    # ** CRITICAL STEP: LOOKUP MATR SCORE DIRECTLY FROM MGO_SCORES **
+                    matr_score = mgo_scores.get(score_key, 0.0)
+                    # Inject the score into the 'matr' key for the XI solver
+                    player_details['matr'] = matr_score
+                    optimal_squad_data.append(player_details)
+                    if matr_score == 0.0:
+                        print(
+                            f"Warning: Score missing in mgo_scores for {player_details.get('web_name', i)} in GW {t_current}. Using 0.")
 
-        # This squad_ids set MUST contain exactly 15 player IDs now.
+        if len(optimal_squad_data) == 15:
+            # CALL THE XI OPTIMIZATION METHOD
+            xi_result = run_starting_xi_optimization(optimal_squad_data)
+            #
+
+        else:
+            xi_result = {"status": f"Squad Size Error ({len(optimal_squad_data)} players)", "max_xi_score": 0,
+                         "starting_xi": [], "bench": [], "captain": None, "vice_captain": None}
 
         # 2. Determine STARTING XI and Captain (S, C)
-        starting_xi = []
-        captain_id = None
-        for i in squad_ids:  # Loop only over the 15 players currently owned
-            s_key = f"S_{i}_{t_current}"
-            c_key = f"C_{i}_{t_current}"
-
-            if s_key in variables and value(variables[s_key]) > 0.5:
-                starting_xi.append(player_map[i])
-
-            if c_key in variables and value(variables[c_key]) > 0.5:
-                captain_id = i
-
-        report['Squad'] = sorted([player_map[i] for i in squad_ids])
-        report['XI'] = starting_xi
-        report['Captain'] = player_map.get(captain_id, "N/A")
+        # starting_xi = []
+        # captain_id = None
+        # for i in squad_ids:  # Loop only over the 15 players currently owned
+        #     s_key = f"S_{i}_{t_current}"
+        #     c_key = f"C_{i}_{t_current}"
+        #
+        #     if s_key in variables and value(variables[s_key]) > 0.5:
+        #         starting_xi.append(player_map[i])
+        #
+        #     if c_key in variables and value(variables[c_key]) > 0.5:
+        #         captain_id = i
+        #
+        # report['Squad'] = sorted([player_map[i] for i in squad_ids])
+        # report['XI'] = starting_xi
+        # report['Captain'] = player_map.get(captain_id, "N/A")
 
         # 3. TRANSFER and FINANCES Analysis (For GWs after the start)
         if t_current > mgo_gw_ids[0]:
@@ -90,6 +107,47 @@ def report_mgo_strategy(
             report['Hit'] = hit_value * 4
             report['FT Available'] = ft_available
 
+        if xi_result['status'] == 'Optimal':
+            report['XI_Status'] = 'Optimal'
+            report['Total_Score'] = xi_result['max_xi_score']
+            current_starting_xi = xi_result.get('starting_xi', [])
+            current_bench = xi_result.get('bench', [])
+
+            # --- CRITICAL FIX: Create a map of the full squad (starters + bench) by ID ---
+            all_squad_players = current_starting_xi + current_bench
+            squad_map_by_id = {p['id']: p for p in all_squad_players}
+
+            # -------------------------------------------------------------
+            # NEW LOGIC: Look up Captain and Vice-Captain using the IDs
+            # -------------------------------------------------------------
+
+            captain_id = xi_result.get('captain')
+            vice_captain_id = xi_result.get('vice_captain')
+
+            # Look up the full player dictionary using the ID
+            captain_player = squad_map_by_id.get(captain_id)
+            vice_captain_player = squad_map_by_id.get(vice_captain_id)
+
+            report['Squad_Names'] = sorted([p.get('name', str(p['id'])) for p in all_squad_players])
+            report['Starting_XI_Names'] = [p.get('name', str(p['id'])) for p in current_starting_xi]
+            report['Bench_Names'] = [p.get('name', str(p['id'])) for p in current_bench]
+
+            # Use the found player dictionary (which is guaranteed to be a dict or None)
+            # The .get('name') call is now SAFE because captain_player is a dictionary.
+            report['Captain'] = captain_player.get('name', str(captain_player['id'])) if captain_player else "N/A"
+            report['Vice_Captain'] = vice_captain_player.get('name', str(
+                vice_captain_player['id'])) if vice_captain_player else "N/A"
+
+        else:
+            # Handle the non-optimal case cleanly (using the squad from MGO, optimal_squad_data)
+            report['XI_Status'] = xi_result['status']
+            report['Total_Score'] = 0.0
+            report['Squad_Names'] = sorted([p.get('name', str(p['id'])) for p in optimal_squad_data])
+            report['Captain'] = 'N/A'
+            report['Vice_Captain'] = 'N/A'
+            report['Starting_XI_Names'] = []
+            report['Bench_Names'] = []
+
         # 4. Store the report for the current GW
         gameweek_reports[t_current] = report
 
@@ -104,9 +162,8 @@ def report_mgo_strategy(
 
         print(f"\n--- 📅 GAMEWEEK {gw} ---")
 
-        # Transfers Summary (for Transfer GWs)
         if is_transfer_gw:
-            if report['Transfers In']:
+            if report.get('Transfers In'):
                 print(f"✅ Transfers IN: {', '.join(report['Transfers In'])}")
                 print(f"❌ Transfers OUT: {', '.join(report['Transfers Out'])}")
                 print(f"💰 Point Hit: {report['Hit']} points")
@@ -114,13 +171,17 @@ def report_mgo_strategy(
                 print("➡️ **HOLD** (0 Transfers Made)")
             print(f"ℹ️ FT Available Next GW: {report['FT Available']}")
 
-        # Selection Summary (for all GWs)
-        print(f"⭐ **Captain:** {report['Captain']}")
+        if report['XI_Status'] == 'Optimal':
+            print(f"⭐ **Captain:** {report['Captain']}")
+            print(f"©️ **Vice-Captain:** {report['Vice_Captain']}")
+            print(f"📈 **Expected XI Score:** {report['Total_Score']:.2f}")
 
-        # Displaying the starting XI
-        print(f"⚽ **Starting XI:**")
-        # For a more readable format, you can categorize by position here if you have position data.
-        print(f"   {', '.join(report['Squad'])}")
+            print(f"⚽ **Starting XI (11):**")
+            print(f"   {', '.join(report['Starting_XI_Names'])}")
+            print(f"🛋️ **Bench (4):**")
+            print(f"   {', '.join(report['Bench_Names'])}")
+        else:
+            print(f"❌ **XI Selection Failed:** Status: {report['XI_Status']}")
 
     print("\n" + "=" * 80)
 
@@ -182,6 +243,8 @@ def solve_multi_gameweek_optimization(all_gws: List[int],
     FT = LpVariable.dicts("FT", TRANSFER_GWS, lowBound=1, upBound=2, cat=LpInteger)
     T_Free = LpVariable.dicts("T_Free", TRANSFER_GWS, lowBound=0, cat=LpInteger)
     P = LpVariable.dicts("P", TRANSFER_GWS, lowBound=0, cat=LpInteger)  # Paid Transfers (Hits)
+
+    B = LpVariable.dicts("Bench_Boost", all_gws, 0, 1, LpBinary)
 
     # --- 2. Define Objective Function ---
 
@@ -468,134 +531,19 @@ def run_starting_xi_optimization(optimal_squad: List[Dict[str, Any]]):
             "status": LpStatus[prob.status],
             "starting_xi": starting_xi,
             "bench": [p for p in optimal_squad if p['id'] not in [s['id'] for s in starting_xi]],
-            "max_xi_score": value(prob.objective)
+            "max_xi_score": value(prob.objective),
+            "captain": captain_id,  # <-- MUST be present
+            "vice_captain": vice_captain_id
         }
     else:
-        return {"status": LpStatus[prob.status], "starting_xi": [], "bench": [], "max_xi_score": 0}
-
-
-def format_starting_xi_report(xi_result: Dict[str, Any]):
-    """Prints the optimized starting XI and bench."""
-
-    # Define position mapping for display
-    POS_MAP = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
-
-    # 1. Starting XI Report
-    starters = xi_result['starting_xi']
-    starters.sort(key=lambda x: x['pos'])  # Sort by position for clean display
-
-    # Calculate formation (e.g., 4-4-2)
-    def_count = sum(1 for p in starters if p['pos'] == 2)
-    mid_count = sum(1 for p in starters if p['pos'] == 3)
-    fwd_count = sum(1 for p in starters if p['pos'] == 4)
-    formation = f"{def_count}-{mid_count}-{fwd_count}"
-
-    print("\n" + "=" * 80)
-    print("⚽ OPTIMAL STARTING XI & CAPTAIN SELECTION 🌟")
-    print(f"MAXIMUM EXPECTED SCORE (XI + Captain): {xi_result['max_xi_score']:.4f}")
-    print(f"OPTIMAL FORMATION: {formation}")
-    print("=" * 80)
-
-    # Table Header
-    print("{:<5} {:<15} {:<15} {:<8} {:<10} {:<10}".format(
-        "POS", "Player Name", "Team", "Price", "MATR (S)", "Status"
-    ))
-    print("-" * 80)
-
-    current_pos = None
-    for player in starters:
-        if player['pos'] != current_pos:
-            current_pos = player['pos']
-            print(f"\n--- {POS_MAP.get(current_pos)} ---")
-
-        status_string = ''
-        if player['is_captain']:
-            status_string = '(C)'
-        elif player['is_vice_captain']:  # NEW
-            status_string = '(VC)'
-
-        print("{:<5} {:<15} {:<15} {:<8} {:<10} {:<10}".format(
-            POS_MAP.get(player['pos']),
-            player['name'],
-            player['team_name'],
-            player['price'],
-            player['matr'],
-            status_string
-        ))
-
-    # 2. Bench Report
-    bench = xi_result['bench']
-    # Standard FPL bench ordering is GKP, DEF, MID, FWD (by position ID)
-    bench.sort(key=lambda x: x['pos'])
-
-    print("\n\n--- 🧍 SUBSTITUTES (Bench Order) ---")
-    print("{:<5} {:<15} {:<15} {:<8} {:<10}".format(
-        "POS", "Player Name", "Team", "Price", "MATR (S)"
-    ))
-    print("-" * 55)
-
-    for player in bench:
-        print("{:<5} {:<15} {:<15} {:<8} {:<10}".format(
-            POS_MAP.get(player['pos']),
-            player['name'],
-            player['team_name'],
-            player['price'],
-            player['matr']
-        ))
-    print("-" * 55)
-
-def format_optimal_squad_report(optimal_squad: List[Dict[str, Any]], total_matr_score: float, total_cost: float):
-    """Prints the final optimal squad in a clean, categorized format."""
-
-    # Define position mapping for display
-    POS_MAP = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
-
-    # Sort the squad by position, then by MATR score within each position
-    optimal_squad.sort(key=lambda x: (x['pos'], x['matr']), reverse=True)
-
-    print("\n" + "=" * 80)
-    print("🏆 OPTIMAL 15-PLAYER SQUAD SELECTED BY PuLP")
-    print(f"MAXIMUM MATR Score (S): {total_matr_score:.4f}")
-    print(f"TOTAL BUDGET USED: £{total_cost:.1f}M")
-    print("=" * 80)
-
-    # Table Header
-    print("{:<5} {:<15} {:<15} {:<8} {:<10} {:<10}".format(
-        "POS", "Player Name", "Team", "Price", "MATR (S)", "ID"
-    ))
-    print("-" * 80)
-
-    current_pos = None
-
-    # Print Players
-    for player in optimal_squad:
-        if player['pos'] != current_pos:
-            current_pos = player['pos']
-            print(
-                f"\n--- {POS_MAP.get(current_pos)} ({len([p for p in optimal_squad if p['pos'] == current_pos])} Selected) ---")
-
-        print("{:<5} {:<15} {:<15} {:<8} {:<10} {:<10}".format(
-            POS_MAP.get(player['pos']),
-            player['name'],
-            player['team_name'],  # Truncate team name for display
-            player['price'],
-            player['matr'],
-            player['id']
-        ))
-    print("-" * 80)
-
-    # Sanity check on the number of players selected
-    print(f"\nTotal Players Selected: {len(optimal_squad)}")
-
-    # Team Limit Check (Optional, but good for diagnostics)
-    team_counts = {}
-    for player in optimal_squad:
-        team = player['team_name']
-        team_counts[team] = team_counts.get(team, 0) + 1
-
-    print("\nTeam Count Summary:")
-    for team, count in sorted(team_counts.items(), key=lambda item: item[1], reverse=True):
-        print(f"  {team:<15}: {count}")
+        return {
+            "status": LpStatus[prob.status],
+            "max_xi_score": 0,
+            "starting_xi": [],
+            "bench": [],
+            "captain": None,
+            "vice_captain": None
+        }
 
 def run_pulp_optimization(player_data_dict: Dict[int, Dict[str, Any]], budget_cap: int = 100):
     """
@@ -759,12 +707,12 @@ if __name__ == '__main__':
     if not fpl_data:
         print("Failed to load core FPL data. Cannot continue.")
     else:
-        next_gw_info = get_next_gameweek_info(fpl_data)
-        if not next_gw_info:
+        current_gw_info = get_current_gameweek_info(fpl_data)
+        if not current_gw_info:
             print("Could not identify the next gameweek. It might be the end of the season.")
         else:
-            gw_id = next_gw_info['id']
-            print(f"✅ Next Gameweek Identified: **Gameweek {gw_id}**")
+            gw_id = current_gw_info['id']
+            print(f"✅ Current Gameweek Identified: **Gameweek {gw_id}**")
             fixtures_endpoint = "fixtures"
             fixtures_data = get_fpl_data(fixtures_endpoint)
 
@@ -773,8 +721,8 @@ if __name__ == '__main__':
                 available_matr_rating = calculate_matr(fpl_data, fixtures_data, available_player_ids)
                 adjusted_matr_rating = calculate_s_matr_score(available_matr_rating)
 
-                cleaned_data = prepare_optimization_data(adjusted_matr_rating, fpl_data)
-                optimization_result = run_pulp_optimization(cleaned_data)
+                optimised_player_data = prepare_optimization_data(adjusted_matr_rating, fpl_data)
+                optimization_result = run_pulp_optimization(optimised_player_data)
                 if optimization_result['status'] == 'Optimal':
                     optimal_squad_gw1 = optimization_result['squad']
                     initial_squad_ids = [p['id'] for p in optimal_squad_gw1]
@@ -795,9 +743,6 @@ if __name__ == '__main__':
 
                     all_gws = list(range(next_gw, next_gw + FDR_LKFWD))
                     gws_to_forecast = list(range(next_gw + 1, next_gw + FDR_LKFWD))
-
-                    # all_player_ids = get_all_player_ids(fpl_data)
-                    # matr_rating = calculate_matr(fpl_data, fixtures_data, all_player_ids)
 
                     # Then call the forecast function:
                     mgo_forecasted_scores = forecast_s_matr_for_mgo(fpl_data, fixtures_data, available_matr_rating, gws_to_forecast)
@@ -840,20 +785,11 @@ if __name__ == '__main__':
                             problem=mgo_problem,
                             all_player_data=fpl_data.get('elements', []),  # Assuming fpl_data is your main data source
                             mgo_gw_ids=all_gws,
-                            initial_squad_ids=initial_squad_ids
+                            optimised_player_data=optimised_player_data,
+                            mgo_scores=mgo_scores,
                         )
                     else:
                         print("MGO failed to find an optimal solution.")
-
-
-                    format_optimal_squad_report(optimal_squad, total_matr_score, total_cost_used)
-                    xi_result = run_starting_xi_optimization(optimal_squad)
-                    if xi_result['status'] == 'Optimal':
-                        # 🌟 NEW CALL: Format and display the Starting XI
-                        format_starting_xi_report(xi_result)
-                    else:
-                        print(f"Starting XI optimization failed. Status: {xi_result['status']}")
-                    # You would then format and print the list of players by position.
                 else:
                     print(f"Optimization failed. Status: {optimization_result['status']}")
             else:

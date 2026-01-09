@@ -145,20 +145,21 @@ def view_gameweek_fixtures(gameweek_id: int, fixtures_data: List[Dict[str, Any]]
     Displays the list of fixtures for a given gameweek.
     Uses the teams_data from bootstrap to map team IDs to names.
     """
-    if not fixtures_data or not teams_data:
+    fixtures_for_current_gw = [
+        fixture for fixture in fixtures_data
+        if fixture.get('event') == gameweek_id
+    ]
+    if not fixtures_for_current_gw or not teams_data:
         print("No fixture or team data to display.")
         return
 
-    # Create a quick map from team ID to team short name for easier reading
     team_map = {team['id']: team['name'] for team in teams_data}
 
     print(f"\n--- Gameweek {gameweek_id} Fixtures ---")
-
-    # Fixture data also contains the difficulty rating
     print("Match | Kick-off Time (UTC) | H-Diff | A-Diff")
     print("-" * 60)
 
-    for fixture in fixtures_data:
+    for fixture in fixtures_for_current_gw:
         home_team_id = fixture['team_h']
         away_team_id = fixture['team_a']
 
@@ -167,7 +168,6 @@ def view_gameweek_fixtures(gameweek_id: int, fixtures_data: List[Dict[str, Any]]
 
         kickoff_time = fixture['kickoff_time']
 
-        # Difficulty is crucial for insight
         home_difficulty = fixture['team_h_difficulty']
         away_difficulty = fixture['team_a_difficulty']
 
@@ -713,7 +713,6 @@ def generate_momentum_report(team_momentum_report: List[Dict[str, Any]],
 
 
 # --- NEW CORE LOGIC: CALCULATE FUTURE DIFFICULTY ---
-DECAY_BASE = 0.5
 def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
                                 bootstrap_data: Dict[str, Any],
                                 current_gw: int,
@@ -733,17 +732,13 @@ def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
         print(f"Error: Fixture window '{window}' is not a valid number. Using default of 5.")
         window_size = 5
     end_gw = current_gw + int(window_size)
-
+    all_gws = list(range(start_gw, end_gw + 1))
+    T = len(all_gws)  # Total size of the horizon/window
     decay_weights = {
-        # gw_index is the number of weeks ahead (k)
-        # For start_gw (k=0), weight is 0.5^0 = 1.0 (Full weight)
-        # For start_gw + 1 (k=1), weight is 0.5^1 = 0.5
-        # For start_gw + 2 (k=2), weight is 0.5^2 = 0.25
-        gw: DECAY_BASE ** (gw - start_gw)
-        for gw in range(start_gw, end_gw + 1)
+        gw: (T - (gw - start_gw)) / T
+        for gw in all_gws
     }
 
-    # 1. Filter fixtures to the upcoming window
     upcoming_fixtures = [
         f for f in fixtures_data
         if f.get('event') and start_gw <= f['event'] <= end_gw
@@ -751,7 +746,6 @@ def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
 
     # 2. Extract difficulty scores for each team
     for fixture in upcoming_fixtures:
-        # Check if the fixture is finished or has a pending event
         if fixture.get('finished', False) or not fixture.get('event'):
             continue
 
@@ -781,63 +775,6 @@ def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
         fixture_run_score[team_id] = sum(scores)
 
     return fixture_run_score
-
-
-# --- NEW CORE LOGIC: COMBINE MOMENTUM AND FDR (MATR) ---
-def calculate_momentum_adjusted_rating(player_momentum: Dict[int, Dict[str, float | int]],
-                                       fixture_run_score: Dict[int, float],
-                                       bootstrap_data: Dict[str, Any],
-                                       momentum_window: int) -> List[Dict[str, Any]]:
-    """
-    Calculates a combined rating for each player: Momentum / Fixture Difficulty.
-    Higher rating is better.
-    """
-
-    # Get necessary lookups
-    player_elements = {p['id']: p for p in bootstrap_data.get('elements', [])}
-    team_short_names = {t['id']: t['short_name'] for t in bootstrap_data.get('teams', [])}
-
-    transfer_rating_report: List[Dict[str, Any]] = []
-
-    ppm_key_from_momentum = f'GW{momentum_window}_PPM'  # This is what calculate_momentum_scores returns
-    games_key = f'GW{momentum_window}_Games'
-
-    # 🌟 FIX 4: Use lowercase for the key stored in the report, to match the reporting function
-    dynamic_ppm_report_key = f'gw{momentum_window}_ppm'
-
-    for player_id, p_momentum in player_momentum.items():
-        player_info = player_elements.get(player_id, {})
-        team_id = player_info.get('team')
-
-        if not team_id or ppm_key_from_momentum not in p_momentum:
-            continue
-
-        team_fdr_score = fixture_run_score.get(team_id, 999)
-
-        # Players must have played enough recently to have a valid PPM
-        if p_momentum.get(games_key, 0) < 1:  # Use dynamic games_key
-            continue
-
-        player_ppm = p_momentum[ppm_key_from_momentum]
-
-        # The key formula: MATR = PPM / FDR Score. Lower FDR gives a higher MATR.
-        matr_score = player_ppm / (team_fdr_score + 0.1)
-
-        transfer_rating_report.append({
-            'player_name': player_info.get('web_name', f"ID {player_id}"),
-            'element_type_id': player_info.get('element_type'),
-            'team': team_short_names.get(team_id, "UNK"),
-
-            # 🌟 FIX 2: Store the PPM using a dynamic key
-            dynamic_ppm_report_key: player_ppm,
-
-            'fdr_score': team_fdr_score,
-            'matr_score': round(matr_score, 4),
-            'total_points': player_info.get('total_points', 0)
-        })
-
-    # Sort by the final calculated rating
-    return sorted(transfer_rating_report, key=lambda x: x['matr_score'], reverse=True)
 
 # --- REPORT GENERATION (for MATR) ---
 
@@ -1072,67 +1009,3 @@ def calculate_s_matr_score(matr_rating: List[Dict[str, Any]]) -> List[Dict[str, 
         player['s_matr_score'] = round(matr_6 * adjustment_factor, 4)
 
     return matr_rating
-
-
-def analyze_gameweek_fixtures(fixtures_data: List[Dict[str, Any]], team_names_map: Dict[int, str]):
-    """
-    Analyzes fixture data to identify total fixtures per GW and teams with DGWs.
-
-    Args:
-        fixtures_data: List of all fixtures.
-        team_names_map: Dictionary mapping team ID to team name (e.g., {1: 'ARS'}).
-
-    Returns:
-        A dictionary containing the analysis results.
-    """
-
-    # 1. Initialize counters
-    total_fixtures_by_gw: Dict[int, int] = collections.defaultdict(int)
-    team_fixtures_by_gw: Dict[int, Dict[int, int]] = collections.defaultdict(lambda: collections.defaultdict(int))
-
-    # 2. Populate counters
-    for fixture in fixtures_data:
-        gw = fixture.get('event')
-        team_h = fixture.get('team_h')
-        team_a = fixture.get('team_a')
-
-        if gw is not None:
-            # Count total fixtures in the Gameweek
-            total_fixtures_by_gw[gw] += 1
-
-            # Count fixtures per team in the Gameweek
-            if team_h is not None:
-                team_fixtures_by_gw[gw][team_h] += 1
-            if team_a is not None:
-                team_fixtures_by_gw[gw][team_a] += 1
-
-    # 3. Process results to find DGWs and the peak GW
-    fixture_analysis = {}
-
-    peak_gw = -1
-    max_fixtures = -1
-
-    for gw, total_fixtures in total_fixtures_by_gw.items():
-
-        # Track the largest Gameweek
-        if total_fixtures > max_fixtures:
-            max_fixtures = total_fixtures
-            peak_gw = gw
-
-        # Identify teams with a DGW (or TGW, Triple Gameweek)
-        double_gameweek_teams = []
-        for team_id, fixture_count in team_fixtures_by_gw[gw].items():
-            if fixture_count > 1:
-                team_name = team_names_map.get(team_id, f"ID {team_id}")
-                double_gameweek_teams.append((team_name, fixture_count))
-
-        fixture_analysis[gw] = {
-            'total_fixtures': total_fixtures,
-            'teams_with_multiple_fixtures': sorted(double_gameweek_teams, key=lambda x: x[1], reverse=True)
-        }
-
-    return {
-        'peak_gw_id': peak_gw,
-        'max_fixtures': max_fixtures,
-        'gameweek_details': fixture_analysis
-    }

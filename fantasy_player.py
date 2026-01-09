@@ -1,6 +1,3 @@
-import json
-import os
-
 from fantacy_pulp import *
 from src.fantacy_analysis import *
 from src.fantacy_analysis import get_available_player_ids
@@ -32,38 +29,24 @@ def get_initial_squad_from_fpl(manager_id: int, current_gw: int) -> tuple[list[i
 
     squad_ids = [pick['element'] for pick in manager_starting_xi.get('picks', [])]
 
-    # # Number of free transfers available
-    # # NOTE: This is for the current GW if transfers haven't been made yet.
-    # transfer_status_url = f"https://fantasy.premierleague.com/api/entry/{manager_id}/transfers/"
-    # transfer_status_response = session.get(transfer_status_url)
-    # transfer_status_data = transfer_status_response.json()
-    #
-    # The FPL API is tricky here; for simplicity, we often rely on third-party wrappers
-    # or the /my-team/ endpoint which requires authentication.
-    # For now, let's assume the starting FT is 1 unless we add authentication.
-    # If the MGO starts mid-GW (after transfers), we need to track this manually.
-    # A safe assumption for a new Gameweek start is 1 FT unless a chip was played
-    # or FTs were carried over from the previous week.
-    free_transfers = 1  # Replace with actual logic if /my-team/ is used with auth
+    free_transfers = 1  # Replace with actual logic
 
     return squad_ids, money_itb, total_team_value, free_transfers
 
 # --- MGO CONFIGURATION ---
-FDR_LKFWD = 4
+FDR_LKFWD = 5
 HIT_COST = 4.0
-MAX_BUDGET = 100.0  # £100M
+MAX_BUDGET = 100.0
 POS_LIMITS = {1: 2, 2: 5, 3: 5, 4: 3}  # Max squad limits (1=GKP, 2=DEF, 3=MID, 4=FWD)
 FORMATION_MIN = {1: 1, 2: 3, 3: 2, 4: 1}  # Min starting XI (1 GKP, 3 DEF, 2 MID, 1 FWD)
 FORMATION_MAX = {1: 1, 2: 5, 3: 5, 4: 3}  # Max starting XI (1 GKP, 5 DEF, 5 MID, 3 FWD)
 if __name__ == '__main__':
     cache_bootstrap_filename = 'fpl_bootstrap_data.json'
     fpl_data = None
-
     if os.path.exists(cache_bootstrap_filename):
         with open(cache_bootstrap_filename, 'r') as f:
             fpl_data = json.load(f)
             print(f"✅ Data loaded successfully from local cache: {cache_bootstrap_filename}")
-
     if fpl_data is None:
         fpl_endpoint = "bootstrap-static/"
         fpl_data = get_fpl_data(fpl_endpoint)
@@ -72,7 +55,6 @@ if __name__ == '__main__':
         print(f"\nData saved to {cache_bootstrap_filename}")
 
     current_gw = get_current_gameweek_info(fpl_data)
-
     initial_squad_ids, money_itb, total_team_value, initial_fts = get_initial_squad_from_fpl(MANAGER_ID, current_gw['id'])
 
     if not current_gw:
@@ -83,16 +65,13 @@ if __name__ == '__main__':
 
         fixtures_data = None
         cache_fixture_filename = 'fpl_fixture_data.json'
-
         if os.path.exists(cache_fixture_filename):
             with open(cache_fixture_filename, 'r') as f:
                 fixtures_data = json.load(f)
                 print(f"✅ Data loaded successfully from local cache: {cache_fixture_filename}")
-
         if fixtures_data is None:
             fixtures_endpoint = "fixtures"
             fixtures_data = get_fpl_data(fixtures_endpoint)
-
             with open(cache_fixture_filename, 'w') as f:
                 json.dump(fixtures_data, f, indent=4)
             print(f"\nData saved to {cache_fixture_filename}")
@@ -105,22 +84,19 @@ if __name__ == '__main__':
         print(f"\n--- ✅ GW{gw_id} Optimal Squad Selected. Moving to MGO... ---")
         print(f"\n--- {initial_squad_ids} ---")
 
-        gw1_s_matr_scores = {}
-        # 'adjusted_matr_rating' is the list of player dicts containing the GW1 's_matr_score'
+        initial_gw_s_matr_scores = {}
         for p in adjusted_matr_rating:
             # Key is (player_id, gw_id)
-            gw1_s_matr_scores[(p['id'], gw_id)] = p['s_matr_score']
+            initial_gw_s_matr_scores[(p['id'], gw_id)] = p['s_matr_score']
 
-        next_gw = gw_id
-
-        all_gws = list(range(next_gw, next_gw + FDR_LKFWD))
-        gws_to_forecast = list(range(next_gw + 1, next_gw + FDR_LKFWD))
+        all_gws = list(range(gw_id, gw_id + (FDR_LKFWD + 1)))
+        gws_to_forecast = list(range(gw_id + 1, gw_id + (FDR_LKFWD + 1)))
 
         # Then call the forecast function:
         mgo_forecasted_scores = forecast_s_matr_for_mgo(fpl_data, fixtures_data, matr_rating, gws_to_forecast)
 
         # D. Combine GW1 and Forecasted Scores
-        mgo_scores = {**gw1_s_matr_scores, **mgo_forecasted_scores}
+        mgo_scores = {**initial_gw_s_matr_scores, **mgo_forecasted_scores}
 
         # B. Prepare Utility Data for Constraints
         player_costs, player_positions, player_teams, all_team_ids = prepare_mgo_utility_data(fpl_data)
@@ -150,11 +126,10 @@ if __name__ == '__main__':
         mgo_problem.solve()
 
         print(f"\n--- 🏆 MGO Solution Status: {LpStatus[mgo_problem.status]} ---")
-
         if LpStatus[mgo_problem.status] == 'Optimal':
             report_mgo_strategy(
                 problem=mgo_problem,
-                all_player_data=fpl_data.get('elements', []),  # Assuming fpl_data is your main data source
+                all_player_data=fpl_data.get('elements', []),
                 mgo_gw_ids=all_gws,
                 optimised_player_data=optimised_player_data,
                 mgo_scores=mgo_scores,

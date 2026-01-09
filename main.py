@@ -7,41 +7,34 @@ from src.fantacy_api import get_fpl_data
 from src.fantacy_logger import setup_user_output
 
 PLAYER_DIR = 'player_history_dumps'
-FDR_WINDOW = 3
+FDR_WINDOW = 5
 def print_matr(fpl_data, fixtures_data):
     current_gw = get_current_gameweek_info(fpl_data)
 
     if current_gw is None:
         print("FATAL ERROR: Could not determine the current Gameweek. Cannot proceed.")
-        # Handle error or use a safe fallback GW ID
     else:
         print(f"Current Gameweek determined: {current_gw['id']}")
 
         fixture_run_score = calculate_fixture_run_score(fixtures_data, fpl_data, current_gw['id'], FDR_WINDOW)
         available_player_ids = get_available_player_ids(fpl_data)
         print(f"Found {len(available_player_ids)} relevant player IDs for history fetching.")
-
-        # Prepare to store the history data
-        player_history_data: Dict[int, List[Dict[str, Any]]] = {}
-
-        # Using a subset of IDs for demonstration/API safety if the full list is huge
         ids_to_fetch = list(available_player_ids)
         print(f"Fetching history for {len(ids_to_fetch)} players...")
+
+        player_history_data: Dict[int, List[Dict[str, Any]]] = {}
 
         for player_id in ids_to_fetch:
             cache_player_filename = f'fpl_player_{player_id}_data.json'
             player_summary = None
             file_path = os.path.join(PLAYER_DIR, cache_player_filename)
-
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     player_summary = json.load(f)
                     print(f"✅ Data loaded successfully from local cache: {file_path}")
-
             if player_summary is None:
                 history_endpoint = f"element-summary/{player_id}/"
                 player_summary = get_fpl_data(history_endpoint)
-
                 with open(file_path, 'w') as f:
                     json.dump(player_summary, f, indent=4)
                 print(f"\nData saved to {file_path}")
@@ -54,35 +47,26 @@ def print_matr(fpl_data, fixtures_data):
                     # print(f"Player data saved to {file_path}")
                 except IOError as e:
                     print(f"Error saving file for player {player_id}: {e}")
-                # Store only the 'history' part which contains GW-by-GW data
                 player_history_data[player_id] = player_summary['history']
-
         print(f"Successfully fetched history for {len(player_history_data)} players.")
 
         player_momentum = calculate_momentum_scores(player_history_data, current_gw['id'])
-        # adjusted_rating = calculate_momentum_adjusted_rating(player_momentum, fixture_run_score, fpl_data, PRIMARY_MATR_WINDOW)
         adjusted_rating = calculate_multi_window_matr(player_momentum, fixture_run_score, fpl_data)
         generate_positional_matr_reports(adjusted_rating, fpl_data, FDR_WINDOW)
         over_under_score = calculate_multi_window_over_under_achiever_score(adjusted_rating)
         generate_over_under_reports(over_under_score, fdr_window=FDR_WINDOW)
 
 def print_core():
-    # 1. Define the endpoint to use
     fpl_endpoint = "bootstrap-static/"
-
-    # 2. Get the data
     fpl_data = get_fpl_data(fpl_endpoint)
-    view_fpl_data_summary(fpl_data)
-
-    # You can now save 'fpl_data' to a file for deeper analysis
     if fpl_data:
         with open('fpl_bootstrap_data.json', 'w') as f:
             json.dump(fpl_data, f, indent=4)
         print("\nFull data saved to fpl_bootstrap_data.json")
-
     if not fpl_data:
         print("Failed to load core FPL data. Cannot continue.")
     else:
+        view_fpl_data_summary(fpl_data)
         generate_injury_report(fpl_data)
         generate_team_strength_report(fpl_data, sort_by='FPL_POINTS')
         generate_team_strength_report(fpl_data, sort_by='ATTACK')
@@ -122,20 +106,6 @@ def print_core():
                 get_value_players_next_gw(fpl_data, playing_team_ids, top_n=25)
 
                 print_matr(fpl_data, fixtures_data)
-                analysis_result = analyze_gameweek_fixtures(fixtures_data, teams_data)
-
-                # --- Reporting ---
-                print(f"## 📊 Fixture Analysis Results")
-                print(
-                    f"The Gameweek with the most fixtures is **GW {analysis_result['peak_gw_id']}** with {analysis_result['max_fixtures']} fixtures.")
-                print("---")
-                print("### Double/Triple Gameweek Details")
-                for gw, details in analysis_result['gameweek_details'].items():
-                    if details['total_fixtures'] < 10:  # Likely a Blank Gameweek (BGW)
-                        print(f"**GW {gw}:** 🚨 Blank Gameweek (Only {details['total_fixtures']} fixtures)")
-                    elif details['teams_with_multiple_fixtures']:
-                        dgw_teams = [f"{team} ({count})" for team, count in details['teams_with_multiple_fixtures']]
-                        print(f"**GW {gw}:** ⭐ Double Gameweek (DGW) - {', '.join(dgw_teams)}")
 
             else:
                 print("Failed to load fixtures data.")
@@ -146,4 +116,3 @@ if __name__ == '__main__':
     setup_user_output()
     print_core()
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/

@@ -186,7 +186,6 @@ def report_mgo_strategy(
     print("\n" + "=" * 80)
 
 # --- MGO CONFIGURATION ---
-FDR_LKFWD = 4
 HIT_COST = 4.0
 MAX_BUDGET = 100.0  # £100M
 POS_LIMITS = {1: 2, 2: 5, 3: 5, 4: 3}  # Max squad limits (1=GKP, 2=DEF, 3=MID, 4=FWD)
@@ -428,19 +427,14 @@ def run_starting_xi_optimization(optimal_squad: List[Dict[str, Any]]):
     Solves for the optimal Starting XI and Captain from the chosen 15-player squad.
     Maximizes MATR score based on starting formation rules.
     """
-
-    # 1. Initialize the LP Problem
     prob = LpProblem("FPL_Starting_XI_Optimization", LpMaximize)
 
-    # Get the player IDs for the 15 players
     player_ids = [p['id'] for p in optimal_squad]
-    player_data_map = {p['id']: p for p in optimal_squad}  # Map for easy data lookup
+    player_data_map = {p['id']: p for p in optimal_squad}
 
     # 2. Define Decision Variables (Y_i for Starter, Z_i for Captain)
-
     # Y_i: 1 if player i is a Starter, 0 otherwise
     starter_vars = LpVariable.dicts("Starter", player_ids, 0, 1, LpBinary)
-
     # Z_i: 1 if player i is the Captain, 0 otherwise
     captain_vars = LpVariable.dicts("Captain", player_ids, 0, 1, LpBinary)
     vice_captain_vars = LpVariable.dicts("ViceCaptain", player_ids, 0, 1, LpBinary)
@@ -452,7 +446,6 @@ def run_starting_xi_optimization(optimal_squad: List[Dict[str, Any]]):
     ]), "Total_Starting_XI_Score"
 
     # 4. Define Constraints
-
     # A. Starting XI Size Constraint (Exactly 11 players must start)
     prob += lpSum([starter_vars[i] for i in player_ids]) == 11, "C_Starting_XI_Size"
 
@@ -462,8 +455,6 @@ def run_starting_xi_optimization(optimal_squad: List[Dict[str, Any]]):
         # Captain must be one of the starters
         prob += captain_vars[i] <= starter_vars[i], f"C_Captain_Is_Starter_{i}"
 
-        # C. Formation Constraints (1 GKP, and variable limits for others)
-    POSITION_MAP = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
     prob += lpSum([vice_captain_vars[i] for i in player_ids]) == 1, "C_One_ViceCaptain"
 
     for i in player_ids:
@@ -503,10 +494,7 @@ def run_starting_xi_optimization(optimal_squad: List[Dict[str, Any]]):
         starter_vars[i] for i in player_ids if player_data_map[i]['pos'] == 4
     ]) <= 3, "C_FWD_Max_3"
 
-    # 5. Solve the problem
     prob.solve()
-
-    # 6. Extract Results
     if prob.status == LpStatusOptimal:
         starting_xi = []
         captain_id = None
@@ -549,29 +537,23 @@ def run_pulp_optimization(player_data_dict: Dict[int, Dict[str, Any]], budget_ca
     """
     Finds the optimal 15-player squad maximizing MATR score within FPL constraints.
     """
-
     player_ids = list(player_data_dict.keys())
 
     # 1. Initialize the LP Problem
     prob = LpProblem("FPL Squad Optimization", LpMaximize)
-
     # 2. Define Decision Variables
     # The variable keys are now the Player IDs
     player_vars = LpVariable.dicts("Select", player_ids, 0, 1, LpBinary)
-
     # 3. Define the Objective Function
     # Use player_ids for iteration
     prob += lpSum([player_data_dict[i]['matr'] * player_vars[i] for i in player_ids]), "Total_MATR_Score"
 
     # 4. Define Constraints
-
     # A. Squad Size Constraint (Total players must be 15)
     prob += lpSum([player_vars[i] for i in player_ids]) == 15, "Squad_Size_Constraint"
-
     # B. Budget Constraint
     prob += lpSum(
         [player_data_dict[i]['price'] * player_vars[i] for i in player_ids]) <= budget_cap, "Budget_Constraint"
-
     # C. Positional Constraints
     POSITION_LIMITS = {1: 2, 2: 5, 3: 5, 4: 3}
     for pos_id, limit in POSITION_LIMITS.items():
@@ -580,7 +562,6 @@ def run_pulp_optimization(player_data_dict: Dict[int, Dict[str, Any]], budget_ca
             player_vars[i] for i in player_ids
             if player_data_dict[i]['pos'] == pos_id
         ]) == limit, f"Position_Constraint_{pos_id}"
-
     # D. Team Limit Constraint
     team_ids = {d['team_id'] for d in player_data_dict.values()}
     for team_id in team_ids:
@@ -590,10 +571,7 @@ def run_pulp_optimization(player_data_dict: Dict[int, Dict[str, Any]], budget_ca
             if player_data_dict[i]['team_id'] == team_id
         ]) <= 3, f"Team_Limit_Constraint_{team_id}"
 
-    # 5. Solve the problem
     prob.solve()
-
-    # 6. Extract Results
     if prob.status == LpStatusOptimal:
         optimal_squad = []
         for i in player_ids:
@@ -613,14 +591,10 @@ def run_pulp_optimization(player_data_dict: Dict[int, Dict[str, Any]], budget_ca
 
 def prepare_optimization_data(adjusted_rating: List[Dict[str, Any]], bootstrap_data: Dict[str, Any]):
     """Extracts and maps necessary data for the PuLP model, keyed by player ID."""
-
     elements = bootstrap_data.get('elements', [])
     team_map = {t['id']: t['name'] for t in bootstrap_data.get('teams', [])}
 
-    # 🌟 FIX 1: Create a reliable map from Player ID to Team ID
-    # This ensures we use the correct team ID stored in the FPL data for that player.
     player_to_team_id = {p['id']: p['team'] for p in elements}
-
     player_data_dict: Dict[int, Dict[str, Any]] = {}
 
     for p in adjusted_rating:
@@ -629,7 +603,6 @@ def prepare_optimization_data(adjusted_rating: List[Dict[str, Any]], bootstrap_d
 
         team_id = player_to_team_id.get(player_id)
 
-        # Ensure player has essential data before adding
         if team_id is None:
             continue
 
@@ -642,48 +615,35 @@ def prepare_optimization_data(adjusted_rating: List[Dict[str, Any]], bootstrap_d
             'price': p['current_price'],
             'matr': p.get('s_matr_score', 0.0)
         }
-
-    # Sanity check is crucial here
     print(f"DEBUG: Total players successfully prepared for PuLP: {len(player_data_dict)}")
-
     return player_data_dict
 
-FDR_WINDOW = 3
 PLAYER_DIR = 'player_history_dumps'
-def calculate_matr(fpl_data, fixtures_data, available_player_ids) -> list[dict[str, Any]] | None:
+def calculate_matr(fpl_data, fixtures_data, available_player_ids, fdr_window = 5) -> list[dict[str, Any]] | None:
     current_gw = get_current_gameweek_info(fpl_data)
-
     if current_gw is None:
         print("FATAL ERROR: Could not determine the current Gameweek. Cannot proceed.")
-        # Handle error or use a safe fallback GW ID
     else:
         print(f"Current Gameweek determined: {current_gw['id']}")
 
-        fixture_run_score = calculate_fixture_run_score(fixtures_data, fpl_data, current_gw['id'], FDR_WINDOW)
+        fixture_run_score = calculate_fixture_run_score(fixtures_data, fpl_data, current_gw['id'], fdr_window)
         print(f"Found {len(available_player_ids)} relevant player IDs for history fetching.")
-
-        # Prepare to store the history data
-        player_history_data: Dict[int, List[Dict[str, Any]]] = {}
-
-        # Using a subset of IDs for demonstration/API safety if the full list is huge
         ids_to_fetch = list(available_player_ids)
         print(f"Fetching history for {len(ids_to_fetch)} players...")
 
+        player_history_data: Dict[int, List[Dict[str, Any]]] = {}
+
         for player_id in ids_to_fetch:
-            # check and fetch/load
             cache_player_filename = f'fpl_player_{player_id}_data.json'
             player_summary = None
             file_path = os.path.join(PLAYER_DIR, cache_player_filename)
-
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     player_summary = json.load(f)
                     print(f"✅ Data loaded successfully from local cache: {file_path}")
-
             if player_summary is None:
                 history_endpoint = f"element-summary/{player_id}/"
                 player_summary = get_fpl_data(history_endpoint)
-
                 with open(file_path, 'w') as f:
                     json.dump(player_summary, f, indent=4)
                 print(f"\nData saved to {file_path}")
@@ -699,26 +659,48 @@ def calculate_matr(fpl_data, fixtures_data, available_player_ids) -> list[dict[s
 
 
 # Press the green button in the gutter to run the script.
+FDR_LKFWD = 5       # Limit to 5
 if __name__ == '__main__':
-    fpl_endpoint = "bootstrap-static/"
-    # 2. Get the data
-    fpl_data = get_fpl_data(fpl_endpoint)
-    view_fpl_data_summary(fpl_data)
+    cache_bootstrap_filename = 'fpl_bootstrap_data.json'
+    fpl_data = None
+    if os.path.exists(cache_bootstrap_filename):
+        with open(cache_bootstrap_filename, 'r') as f:
+            fpl_data = json.load(f)
+            print(f"✅ Data loaded successfully from local cache: {cache_bootstrap_filename}")
+    if fpl_data is None:
+        fpl_endpoint = "bootstrap-static/"
+        fpl_data = get_fpl_data(fpl_endpoint)
+        with open(cache_bootstrap_filename, 'w') as f:
+            json.dump(fpl_data, f, indent=4)
+        print(f"\nData saved to {cache_bootstrap_filename}")
+
     if not fpl_data:
         print("Failed to load core FPL data. Cannot continue.")
     else:
+        view_fpl_data_summary(fpl_data)
         current_gw_info = get_current_gameweek_info(fpl_data)
         if not current_gw_info:
             print("Could not identify the next gameweek. It might be the end of the season.")
         else:
             gw_id = current_gw_info['id']
             print(f"✅ Current Gameweek Identified: **Gameweek {gw_id}**")
-            fixtures_endpoint = "fixtures"
-            fixtures_data = get_fpl_data(fixtures_endpoint)
+            fixtures_data = None
+            cache_fixture_filename = 'fpl_fixture_data.json'
+            if os.path.exists(cache_fixture_filename):
+                with open(cache_fixture_filename, 'r') as f:
+                    fixtures_data = json.load(f)
+                    print(f"✅ Data loaded successfully from local cache: {cache_fixture_filename}")
+            if fixtures_data is None:
+                fixtures_endpoint = "fixtures"
+                fixtures_data = get_fpl_data(fixtures_endpoint)
+                with open(cache_fixture_filename, 'w') as f:
+                    json.dump(fixtures_data, f, indent=4)
+                print(f"\nData saved to {cache_fixture_filename}")
 
+            print(f'window={FDR_LKFWD}')
             if fixtures_data:
                 available_player_ids = get_available_player_ids(fpl_data)
-                available_matr_rating = calculate_matr(fpl_data, fixtures_data, available_player_ids)
+                available_matr_rating = calculate_matr(fpl_data, fixtures_data, available_player_ids, FDR_LKFWD)
                 adjusted_matr_rating = calculate_s_matr_score(available_matr_rating)
 
                 optimised_player_data = prepare_optimization_data(adjusted_matr_rating, fpl_data)
@@ -733,37 +715,27 @@ if __name__ == '__main__':
                     total_matr_score = optimization_result['total_matr_score']
                     total_cost_used = sum(p['price'] for p in optimal_squad)
 
-                    gw1_s_matr_scores = {}
-                    # 'adjusted_matr_rating' is the list of player dicts containing the GW1 's_matr_score'
+                    initial_gw_s_matr_scores = {}
                     for p in adjusted_matr_rating:
                         # Key is (player_id, gw_id)
-                        gw1_s_matr_scores[(p['id'], gw_id)] = p['s_matr_score']
+                        initial_gw_s_matr_scores[(p['id'], gw_id)] = p['s_matr_score']
 
-                    next_gw = gw_id  # e.g., 1
-
-                    all_gws = list(range(next_gw, next_gw + FDR_LKFWD))
-                    gws_to_forecast = list(range(next_gw + 1, next_gw + FDR_LKFWD))
-
-                    # Then call the forecast function:
+                    all_gws = list(range(gw_id, gw_id + (FDR_LKFWD+1)))
+                    gws_to_forecast = list(range(gw_id + 1, gw_id + (FDR_LKFWD+1)))
                     mgo_forecasted_scores = forecast_s_matr_for_mgo(fpl_data, fixtures_data, available_matr_rating, gws_to_forecast)
-
-                    # D. Combine GW1 and Forecasted Scores
-                    mgo_scores = {**gw1_s_matr_scores, **mgo_forecasted_scores}
-
-                    # B. Prepare Utility Data for Constraints
+                    mgo_scores = {**initial_gw_s_matr_scores, **mgo_forecasted_scores}
                     player_costs, player_positions, player_teams, all_team_ids = prepare_mgo_utility_data(fpl_data)
 
-                    # Remove to use all players
+                    # makes sure players are playing
                     scored_player_ids = {p_id for p_id, gw_t in mgo_scores.keys()}
-                    MGO_PLAYERS_TEST = [
+                    player_ids_selection = [
                         p_id for p_id in scored_player_ids
                         if p_id in available_player_ids
                     ]
                     # C. Run MGO
                     mgo_problem = solve_multi_gameweek_optimization(
                         all_gws=all_gws,
-                        # all_player_ids=list(all_player_ids),
-                        all_player_ids=MGO_PLAYERS_TEST,
+                        all_player_ids=player_ids_selection,
                         initial_squad_ids=initial_squad_ids,
                         player_scores_matr=mgo_scores,
                         player_costs=player_costs,

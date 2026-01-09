@@ -129,10 +129,15 @@ if __name__ == '__main__':
         if LpStatus[mgo_problem.status] == 'Optimal':
             report_mgo_strategy(
                 problem=mgo_problem,
-                all_player_data=fpl_data.get('elements', []),
                 mgo_gw_ids=all_gws,
                 optimised_player_data=optimised_player_data,
                 mgo_scores=mgo_scores,
             )
         else:
             print("MGO failed to find an optimal solution.")
+
+        mgo_scores = forecast_s_matr_for_chips(fpl_data, fixtures_data, matr_rating, gws_to_forecast)
+        chip_results = evaluate_squad_chip_potential(initial_squad_ids, mgo_scores, gws_to_forecast)
+        team_names_map = extract_team_names_map(fpl_data)
+        report_chip_optimization_results(chip_results, optimised_player_data, fixtures_data, team_names_map)
+

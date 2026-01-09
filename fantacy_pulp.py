@@ -1,4 +1,5 @@
 # This is a sample Python script.
+import operator
 import os
 
 from pulp import *
@@ -15,7 +16,6 @@ def get_player_data_for_xi(player_id: int, player_data: Dict[int, Dict[str, Any]
 
 def report_mgo_strategy(
         problem: LpProblem,
-        all_player_data: List[Dict[str, Any]],
         mgo_gw_ids: List[int],
         optimised_player_data: Dict[int, Dict[str, Any]],
         mgo_scores: Dict[tuple, float]
@@ -218,7 +218,7 @@ def solve_multi_gameweek_optimization(all_gws: List[int],
         The solved PuLP problem object.
     """
 
-    problem = LpProblem("FPL_MGO_Aggressive", LpMaximize)
+    problem_mgo = LpProblem("FPL_MGO_Aggressive", LpMaximize)
 
     # --- Time and Player Dimensions ---
     ALL_GWS = all_gws
@@ -260,39 +260,39 @@ def solve_multi_gameweek_optimization(all_gws: List[int],
 
         objective.append(xi_score + captain_bonus + transfer_penalty)
 
-    problem += lpSum(objective), "Total_Cumulative_S_MATR_Score"
+    problem_mgo += lpSum(objective), "Total_Cumulative_S_MATR_Score"
 
     # --- 3. Linking Constraints (Transfer Logic) ---
     t_start = ALL_GWS[0]
     # A. Squad Continuity: X_i_t == X_i_t-1 - O_i_t + I_i_t
     for i in PLAYERS:
         for t_current, t_prev in gw_pairs:
-            problem += X[i][t_current] - X[i][t_prev] + O[i][t_current] - I[i][
+            problem_mgo += X[i][t_current] - X[i][t_prev] + O[i][t_current] - I[i][
                 t_current] == 0, f"Squad_Continuity_P{i}_GW{t_current}"
 
     # B. Transfer Balance: Buys = Sells
     for t in TRANSFER_GWS:
-        problem += lpSum(I[i][t] for i in PLAYERS) == lpSum(O[i][t] for i in PLAYERS), f"Transfer_Balance_GW{t}"
+        problem_mgo += lpSum(I[i][t] for i in PLAYERS) == lpSum(O[i][t] for i in PLAYERS), f"Transfer_Balance_GW{t}"
 
     # C. Total Transfers Link: Buys = T_Free + P_t
     for t in TRANSFER_GWS:
-        problem += lpSum(I[i][t] for i in PLAYERS) == T_Free[t] + P[t], f"Total_Transfers_Link_GW{t}"
+        problem_mgo += lpSum(I[i][t] for i in PLAYERS) == T_Free[t] + P[t], f"Total_Transfers_Link_GW{t}"
 
     # D. Free Transfer Usage Limit
     for t in TRANSFER_GWS:
-        problem += T_Free[t] <= FT[t], f"FT_Usage_Limit_GW{t}"
+        problem_mgo += T_Free[t] <= FT[t], f"FT_Usage_Limit_GW{t}"
 
     # E. Carryover Logic
     for t_current, t_prev in gw_pairs:
         if t_prev == t_start:  # This is the first transition (e.g., GW 22 -> GW 23)
             # FT[23] = initial_fts - T_Free[23] + 1
             # T_Free[t_current] is used for transfers INTO X[t_current].
-            problem += FT[t_current] - initial_fts + T_Free[t_current] == 1, f"FT_Carryover_Initial_GW{t_current}"
+            problem_mgo += FT[t_current] - initial_fts + T_Free[t_current] == 1, f"FT_Carryover_Initial_GW{t_current}"
         else:
             # This logic assumes T_Free[t_prev] is the FT used in the previous transfer window (t_prev)
             # This is complex due to indexing; we will keep the original implementation assuming T_Free is indexed
             # to the period *before* the transfer:
-            problem += FT[t_current] - FT[t_prev] + T_Free[t_prev] == 1, f"FT_Carryover_Standard_GW{t_current}"
+            problem_mgo += FT[t_current] - FT[t_prev] + T_Free[t_prev] == 1, f"FT_Carryover_Standard_GW{t_current}"
     # --- 4. Static FPL Constraints (Applied Every GW) ---
 
     # F. Initial Squad Fix (GW1 Base)
@@ -301,58 +301,58 @@ def solve_multi_gameweek_optimization(all_gws: List[int],
     for i in PLAYERS:
         # Use the actual GW ID (23) instead of the conceptual index (1)
         if i in initial_squad_ids:
-            problem += X[i][first_gw] == 1, f"Initial_Squad_Fix_P{i}_GW{first_gw}"
+            problem_mgo += X[i][first_gw] == 1, f"Initial_Squad_Fix_P{i}_GW{first_gw}"
         else:
-            problem += X[i][first_gw] == 0, f"Initial_Squad_Fix_P{i}_GW{first_gw}"
+            problem_mgo += X[i][first_gw] == 0, f"Initial_Squad_Fix_P{i}_GW{first_gw}"
 
     # G. Budget Limit (Assuming static player prices)
     t_start = ALL_GWS[0]
     total_buying_power = initial_team_value + initial_money_itb
-    problem += lpSum(
+    problem_mgo += lpSum(
         X[i][t_start] * player_costs[i] for i in PLAYERS) <= total_buying_power, f"Budget_Limit_GW{t_start}"
 
     t_transfer_1 = TRANSFER_GWS[0]  # e.g., 23
     # Initial Bank ITB can be used for the first transfer set only.
     initial_money_in_bank = initial_money_itb
 
-    problem += lpSum(I[i][t_transfer_1] * player_costs[i] for i in PLAYERS) \
+    problem_mgo += lpSum(I[i][t_transfer_1] * player_costs[i] for i in PLAYERS) \
                <= lpSum(O[i][t_transfer_1] * player_costs[i] for i in PLAYERS) + initial_money_in_bank, \
         f"Dynamic_Budget_T1_GW{t_transfer_1}"
 
     # Constraint for SUBSEQUENT TRANSFER GWs (GW 24, 25...):
     # For subsequent weeks, transfers must be budget-neutral (Buys <= Sells).
     for t in TRANSFER_GWS[1:]:  # Iterates over GW 24, 25
-        problem += lpSum(I[i][t] * player_costs[i] for i in PLAYERS) \
+        problem_mgo += lpSum(I[i][t] * player_costs[i] for i in PLAYERS) \
                    <= lpSum(O[i][t] * player_costs[i] for i in PLAYERS), f"Dynamic_Budget_Subsequent_GW{t}"
     # H. Squad Size and Positional Limits
     for t in ALL_GWS:
-        problem += lpSum(X[i][t] for i in PLAYERS) == 15, f"Squad_Size_GW{t}"  # Must have 15 players
+        problem_mgo += lpSum(X[i][t] for i in PLAYERS) == 15, f"Squad_Size_GW{t}"  # Must have 15 players
 
         for pos_id, limit in POS_LIMITS.items():
-            problem += lpSum(
+            problem_mgo += lpSum(
                 X[i][t] for i in PLAYERS if player_positions[i] == pos_id) <= limit, f"Max_Pos_Limit_{pos_id}_GW{t}"
 
     # I. Team Limits (Max 3 players per team)
     for team_id in all_team_ids:
         for t in ALL_GWS:
-            problem += lpSum(X[i][t] for i in PLAYERS if player_teams[i] == team_id) <= 3, f"Team_Limit_{team_id}_GW{t}"
+            problem_mgo += lpSum(X[i][t] for i in PLAYERS if player_teams[i] == team_id) <= 3, f"Team_Limit_{team_id}_GW{t}"
 
     # J. Starting XI and Captain Constraints
     for t in ALL_GWS:
-        problem += lpSum(S[i][t] for i in PLAYERS) == 11, f"XI_Size_GW{t}"  # Must have 11 starters
-        problem += lpSum(C[i][t] for i in PLAYERS) == 1, f"Captain_Count_GW{t}"  # Must have 1 captain
+        problem_mgo += lpSum(S[i][t] for i in PLAYERS) == 11, f"XI_Size_GW{t}"  # Must have 11 starters
+        problem_mgo += lpSum(C[i][t] for i in PLAYERS) == 1, f"Captain_Count_GW{t}"  # Must have 1 captain
 
         for pos_id in POS_LIMITS:
             sum_starters = lpSum(S[i][t] for i in PLAYERS if player_positions[i] == pos_id)
-            problem += sum_starters >= FORMATION_MIN[pos_id], f"Min_Form_P{pos_id}_GW{t}"
-            problem += sum_starters <= FORMATION_MAX[pos_id], f"Max_Form_P{pos_id}_GW{t}"
+            problem_mgo += sum_starters >= FORMATION_MIN[pos_id], f"Min_Form_P{pos_id}_GW{t}"
+            problem_mgo += sum_starters <= FORMATION_MAX[pos_id], f"Max_Form_P{pos_id}_GW{t}"
 
         # C and S must be subsets of X, and C must be a subset of S
         for i in PLAYERS:
-            problem += S[i][t] <= X[i][t], f"Starter_In_Squad_P{i}_GW{t}"
-            problem += C[i][t] <= S[i][t], f"Captain_Is_Starter_P{i}_GW{t}"
+            problem_mgo += S[i][t] <= X[i][t], f"Starter_In_Squad_P{i}_GW{t}"
+            problem_mgo += C[i][t] <= S[i][t], f"Captain_Is_Starter_P{i}_GW{t}"
 
-    return problem
+    return problem_mgo
 
 
 def get_mgo_gameweeks(bootstrap_data: Dict[str, Any], current_gw: int, window: int) -> List[int]:
@@ -383,7 +383,48 @@ def forecast_s_matr_for_mgo(fpl_data: Dict[str, Any], fixtures_data_all: List[Di
 
         # 2. Calculate Time-Weighted FDR (S-MATR DENOMINATOR) for the run starting at GW_t
         #    NOTE: We treat GW_t-1 as the 'current_gw' for the FDR calculation function
-        fixture_run_score_t = calculate_fixture_run_score(
+        fixture_run_score_t = calculate_weighted_fixture_run_score(
+            fixtures_data_all, fpl_data, current_gw=gw_t, window=window_size
+        )
+
+        # 3. Combine constant PP90M with dynamic FDR
+        for player_id, pp90m in player_pp90m.items():
+            player_team_id = next(p['team'] for p in fpl_data.get('elements', []) if p['id'] == player_id)
+
+            # The FDR score for the current GW window
+            fdr_score_t = fixture_run_score_t.get(player_team_id, 999.0)
+
+            # Recalculate S-MATR for GW_t: PP90M / (Weighted FDR + 0.1)
+            if fdr_score_t == 999.0 or fdr_score_t == 0.0:
+                s_matr_t = 0.0
+            else:
+                s_matr_t = pp90m / (fdr_score_t + 0.1)
+
+            mgo_scores[(player_id, gw_t)] = round(s_matr_t, 4)
+
+    return mgo_scores
+
+
+def forecast_s_matr_for_chips(fpl_data: Dict[str, Any], fixtures_data_all: List[Dict[str, Any]],
+                            matr_rating: List[Dict[str, Any]], mgo_gws: List[int]) -> Dict[Tuple[int, int], float]:
+    """
+    Forecasts the S-MATR score for every player for every GW in the MGO window.
+
+    ASSUMPTION: Player PP90M (momentum) remains constant at its current value (calculated for GW1).
+    Only the Fixture Difficulty (FDR) changes over time.
+    """
+    s_matr_current = calculate_s_matr_score(matr_rating)
+
+    player_pp90m = {p['id']: p.get('s_matr_score', 0.0) for p in s_matr_current}
+
+    mgo_scores: Dict[Tuple[int, int], float] = {}
+
+    for gw_t in mgo_gws:
+        window_size = mgo_gws[-1] - gw_t + 1  # Dynamic window size for the calculation (GWt to GW_End)
+
+        # 2. Calculate Time-Weighted FDR (S-MATR DENOMINATOR) for the run starting at GW_t
+        #    NOTE: We treat GW_t-1 as the 'current_gw' for the FDR calculation function
+        fixture_run_score_t = calculate_equal_fixture_run_score(
             fixtures_data_all, fpl_data, current_gw=gw_t, window=window_size
         )
 
@@ -427,7 +468,7 @@ def run_starting_xi_optimization(optimal_squad: List[Dict[str, Any]]):
     Solves for the optimal Starting XI and Captain from the chosen 15-player squad.
     Maximizes MATR score based on starting formation rules.
     """
-    prob = LpProblem("FPL_Starting_XI_Optimization", LpMaximize)
+    problem_xi_optimization = LpProblem("FPL_Starting_XI_Optimization", LpMaximize)
 
     player_ids = [p['id'] for p in optimal_squad]
     player_data_map = {p['id']: p for p in optimal_squad}
@@ -440,62 +481,62 @@ def run_starting_xi_optimization(optimal_squad: List[Dict[str, Any]]):
     vice_captain_vars = LpVariable.dicts("ViceCaptain", player_ids, 0, 1, LpBinary)
     # 3. Define the Objective Function
     # Maximize: Sum(MATR_i * Y_i) + Sum(MATR_i * Z_i)  (Doubles Captain's score)
-    prob += lpSum([
+    problem_xi_optimization += lpSum([
         player_data_map[i]['matr'] * starter_vars[i] + player_data_map[i]['matr'] * captain_vars[i]
         for i in player_ids
     ]), "Total_Starting_XI_Score"
 
     # 4. Define Constraints
     # A. Starting XI Size Constraint (Exactly 11 players must start)
-    prob += lpSum([starter_vars[i] for i in player_ids]) == 11, "C_Starting_XI_Size"
+    problem_xi_optimization += lpSum([starter_vars[i] for i in player_ids]) == 11, "C_Starting_XI_Size"
 
     # B. Captain Constraints
-    prob += lpSum([captain_vars[i] for i in player_ids]) == 1, "C_One_Captain"  # Exactly one captain
+    problem_xi_optimization += lpSum([captain_vars[i] for i in player_ids]) == 1, "C_One_Captain"  # Exactly one captain
     for i in player_ids:
         # Captain must be one of the starters
-        prob += captain_vars[i] <= starter_vars[i], f"C_Captain_Is_Starter_{i}"
+        problem_xi_optimization += captain_vars[i] <= starter_vars[i], f"C_Captain_Is_Starter_{i}"
 
-    prob += lpSum([vice_captain_vars[i] for i in player_ids]) == 1, "C_One_ViceCaptain"
+    problem_xi_optimization += lpSum([vice_captain_vars[i] for i in player_ids]) == 1, "C_One_ViceCaptain"
 
     for i in player_ids:
         # 2. Vice Captain must be one of the starters
-        prob += vice_captain_vars[i] <= starter_vars[i], f"C_VC_Is_Starter_{i}"
+        problem_xi_optimization += vice_captain_vars[i] <= starter_vars[i], f"C_VC_Is_Starter_{i}"
 
         # 3. Captain and Vice Captain cannot be the same player
         # Z_i + V_i <= 1 means that for any player i, they can be EITHER captain OR vice captain, but not both (1+1 <= 1 is false).
-        prob += captain_vars[i] + vice_captain_vars[i] <= 1, f"C_C_and_VC_are_Different_{i}"
+        problem_xi_optimization += captain_vars[i] + vice_captain_vars[i] <= 1, f"C_C_and_VC_are_Different_{i}"
 
     # 1. GKP: Must start exactly 1 Goalkeeper
-    prob += lpSum([
+    problem_xi_optimization += lpSum([
         starter_vars[i] for i in player_ids if player_data_map[i]['pos'] == 1
     ]) == 1, "C_GKP_Must_Start_One"
 
     # 2. DEF: 3 to 5 Defenders
-    prob += lpSum([
+    problem_xi_optimization += lpSum([
         starter_vars[i] for i in player_ids if player_data_map[i]['pos'] == 2
     ]) >= 3, "C_DEF_Min_3"
-    prob += lpSum([
+    problem_xi_optimization += lpSum([
         starter_vars[i] for i in player_ids if player_data_map[i]['pos'] == 2
     ]) <= 5, "C_DEF_Max_5"
 
     # 3. MID: 2 to 5 Midfielders
-    prob += lpSum([
+    problem_xi_optimization += lpSum([
         starter_vars[i] for i in player_ids if player_data_map[i]['pos'] == 3
     ]) >= 2, "C_MID_Min_2"
-    prob += lpSum([
+    problem_xi_optimization += lpSum([
         starter_vars[i] for i in player_ids if player_data_map[i]['pos'] == 3
     ]) <= 5, "C_MID_Max_5"
 
     # 4. FWD: 1 to 3 Forwards
-    prob += lpSum([
+    problem_xi_optimization += lpSum([
         starter_vars[i] for i in player_ids if player_data_map[i]['pos'] == 4
     ]) >= 1, "C_FWD_Min_1"
-    prob += lpSum([
+    problem_xi_optimization += lpSum([
         starter_vars[i] for i in player_ids if player_data_map[i]['pos'] == 4
     ]) <= 3, "C_FWD_Max_3"
 
-    prob.solve()
-    if prob.status == LpStatusOptimal:
+    problem_xi_optimization.solve()
+    if problem_xi_optimization.status == LpStatusOptimal:
         starting_xi = []
         captain_id = None
         vice_captain_id = None
@@ -516,16 +557,16 @@ def run_starting_xi_optimization(optimal_squad: List[Dict[str, Any]]):
                     vice_captain_id = i
 
         return {
-            "status": LpStatus[prob.status],
+            "status": LpStatus[problem_xi_optimization.status],
             "starting_xi": starting_xi,
             "bench": [p for p in optimal_squad if p['id'] not in [s['id'] for s in starting_xi]],
-            "max_xi_score": value(prob.objective),
+            "max_xi_score": value(problem_xi_optimization.objective),
             "captain": captain_id,  # <-- MUST be present
             "vice_captain": vice_captain_id
         }
     else:
         return {
-            "status": LpStatus[prob.status],
+            "status": LpStatus[problem_xi_optimization.status],
             "max_xi_score": 0,
             "starting_xi": [],
             "bench": [],
@@ -540,25 +581,25 @@ def run_pulp_optimization(player_data_dict: Dict[int, Dict[str, Any]], budget_ca
     player_ids = list(player_data_dict.keys())
 
     # 1. Initialize the LP Problem
-    prob = LpProblem("FPL Squad Optimization", LpMaximize)
+    problem_squad = LpProblem("FPL Squad Optimization", LpMaximize)
     # 2. Define Decision Variables
     # The variable keys are now the Player IDs
     player_vars = LpVariable.dicts("Select", player_ids, 0, 1, LpBinary)
     # 3. Define the Objective Function
     # Use player_ids for iteration
-    prob += lpSum([player_data_dict[i]['matr'] * player_vars[i] for i in player_ids]), "Total_MATR_Score"
+    problem_squad += lpSum([player_data_dict[i]['matr'] * player_vars[i] for i in player_ids]), "Total_MATR_Score"
 
     # 4. Define Constraints
     # A. Squad Size Constraint (Total players must be 15)
-    prob += lpSum([player_vars[i] for i in player_ids]) == 15, "Squad_Size_Constraint"
+    problem_squad += lpSum([player_vars[i] for i in player_ids]) == 15, "Squad_Size_Constraint"
     # B. Budget Constraint
-    prob += lpSum(
+    problem_squad += lpSum(
         [player_data_dict[i]['price'] * player_vars[i] for i in player_ids]) <= budget_cap, "Budget_Constraint"
     # C. Positional Constraints
     POSITION_LIMITS = {1: 2, 2: 5, 3: 5, 4: 3}
     for pos_id, limit in POSITION_LIMITS.items():
         # Iterate through players whose position matches the pos_id
-        prob += lpSum([
+        problem_squad += lpSum([
             player_vars[i] for i in player_ids
             if player_data_dict[i]['pos'] == pos_id
         ]) == limit, f"Position_Constraint_{pos_id}"
@@ -566,27 +607,27 @@ def run_pulp_optimization(player_data_dict: Dict[int, Dict[str, Any]], budget_ca
     team_ids = {d['team_id'] for d in player_data_dict.values()}
     for team_id in team_ids:
         # Iterate through players whose team_id matches the current team_id
-        prob += lpSum([
+        problem_squad += lpSum([
             player_vars[i] for i in player_ids
             if player_data_dict[i]['team_id'] == team_id
         ]) <= 3, f"Team_Limit_Constraint_{team_id}"
 
-    prob.solve()
-    if prob.status == LpStatusOptimal:
+    problem_squad.solve()
+    if problem_squad.status == LpStatusOptimal:
         optimal_squad = []
         for i in player_ids:
             if player_vars[i].varValue == 1.0:
                 optimal_squad.append(player_data_dict[i])
 
-        total_cost = value(prob.objective)  # The objective function value (total MATR score)
+        total_cost = value(problem_squad.objective)  # The objective function value (total MATR score)
 
         return {
-            "status": LpStatus[prob.status],
+            "status": LpStatus[problem_squad.status],
             "total_matr_score": total_cost,
             "squad": optimal_squad
         }
     else:
-        return {"status": LpStatus[prob.status], "squad": []}
+        return {"status": LpStatus[problem_squad.status], "squad": []}
 
 
 def prepare_optimization_data(adjusted_rating: List[Dict[str, Any]], bootstrap_data: Dict[str, Any]):
@@ -626,7 +667,7 @@ def calculate_matr(fpl_data, fixtures_data, available_player_ids, fdr_window = 5
     else:
         print(f"Current Gameweek determined: {current_gw['id']}")
 
-        fixture_run_score = calculate_fixture_run_score(fixtures_data, fpl_data, current_gw['id'], fdr_window)
+        fixture_run_score = calculate_weighted_fixture_run_score(fixtures_data, fpl_data, current_gw['id'], fdr_window)
         print(f"Found {len(available_player_ids)} relevant player IDs for history fetching.")
         ids_to_fetch = list(available_player_ids)
         print(f"Fetching history for {len(ids_to_fetch)} players...")
@@ -658,8 +699,232 @@ def calculate_matr(fpl_data, fixtures_data, available_player_ids, fdr_window = 5
         return calculate_multi_window_matr(player_momentum, fixture_run_score, fpl_data)
 
 
+def evaluate_squad_chip_potential(
+        current_squad_ids: List[int],
+        mgo_scores: Dict[Tuple[int, int], float],
+        gws_to_forecast: List[int]
+) -> Dict[str, Any]:
+    """
+    Evaluates the chip potential (BB, TC) for a given fixed 15-player squad
+    across the remainder of the season, based on MATR scores.
+    """
+    best_bb: Optional[Tuple[int, float]] = None  # (GW_ID, BB_Gain_Score)
+    best_tc: Optional[Tuple[int, float]] = None  # (GW_ID, TC_Gain_Score)
+    best_tc_player_data: Optional[Tuple[int, float]] = None  # (Player_ID, TC_Gain_Score)
+
+    # Store the full top 15 list for the best BB week to populate the report
+    best_bb_squad_data: List[Tuple[int, float]] = []
+
+    # --- 1. Iterate through every remaining GW ---
+    for gw_id in gws_to_forecast:
+
+        # Get the scores for only the players in your current squad for this GW
+        # Format: [(player_id, score), ...]
+        squad_scores = []
+        for player_id in current_squad_ids:
+            score = mgo_scores.get((player_id, gw_id), 0.0)
+            if score > 0.0:
+                squad_scores.append((player_id, score))
+
+        # Must have at least a full starting XI to be considered for chips
+        if len(squad_scores) < 11:
+            continue
+
+        # Sort the scores (by score, descending)
+        squad_scores.sort(key=operator.itemgetter(1), reverse=True)
+
+        # --- 2. Calculate BB Potential (Sum of 12th, 13th, 14th, 15th scores) ---
+        current_bb_gain = 0.0
+        if len(squad_scores) >= 15:
+            # We assume the top 11 are starters. BB gain is the sum of the remaining 4.
+            # BB Gain is the bench scores added to the total.
+            current_bb_gain = sum(score for id, score in squad_scores[11:15])
+
+            # For reporting, we also need the full 15-player score
+            current_bb_squad_total = sum(score for id, score in squad_scores[:15])
+        else:
+            # If we don't have 15 players, BB is not feasible for maximum potential,
+            # so we skip/ignore this GW for BB consideration.
+            current_bb_squad_total = 0.0
+
+            # --- 3. Calculate TC Potential (The highest score) ---
+        current_tc_gain = squad_scores[0][1]  # TC gain is just the captain's score x2 (already modelled in MATR?)
+        current_tc_player_id = squad_scores[0][0]
+
+        # --- 4. Update the Best GWs ---
+
+        # Bench Boost Update (Maximize the GAIN from the bench)
+        if current_bb_gain > 0.0 and (best_bb is None or current_bb_gain > best_bb[1]):
+            best_bb = (gw_id, current_bb_squad_total)  # Store full 15 score for report
+            best_bb_squad_data = squad_scores[:15]
+
+        # Triple Captain Update (Maximize the highest individual score)
+        if best_tc is None or current_tc_gain > best_tc[1]:
+            best_tc = (gw_id, current_tc_gain)
+            best_tc_player_data = (current_tc_player_id, current_tc_gain)
+
+    # --- 5. Return Results ---
+    return {
+        "optimal_bb_gw": best_bb[0] if best_bb else None,
+        "bb_potential_squad_score": best_bb[1] if best_bb else 0.0,
+        "bb_top_5_players_data": best_bb_squad_data[:5],  # Top 5 from the best BB squad
+        "optimal_tc_gw": best_tc[0] if best_tc else None,
+        "tc_potential_captain_score": best_tc[1] if best_tc else 0.0,
+        "tc_player_data": best_tc_player_data,
+    }
+
+def chip_optimization():
+    gws_to_forecast = list(range(gw_id + 1, gw_id + (FDR_LKFWD + 1)))
+    mgo_scores = forecast_s_matr_for_chips(fpl_data, fixtures_data, available_matr_rating, gws_to_forecast)
+    chip_results = evaluate_squad_chip_potential(initial_squad_ids, mgo_scores, gws_to_forecast)
+    team_names_map = extract_team_names_map(fpl_data)
+    report_chip_optimization_results(chip_results, optimised_player_data, fixtures_data, team_names_map)
+
+
+def report_chip_optimization_results(results: Dict[str, Any],
+                                     all_player_data: Dict[int, Dict[str, Any]],
+                                     fixtures_data: List[Dict[str, Any]],
+                                     team_names_map: Dict[int, str]):
+    """
+    Generates a formatted report for the strategic chip optimization results.
+
+    Args:
+        results: The dictionary returned by solve_chip_optimization.
+    """
+    print("\n" + "=" * 50)
+    print("🏆 Strategic Chip Optimization Report 🏆")
+
+    print("✅ Status: Optimal Chip Timing Found\n")
+    optimal_bb_gw = results.get("optimal_bb_gw")
+    bb_potential_score = results.get("bb_potential_squad_score", 0.0)
+    top_5_bb = results.get("bb_top_5_players_data", [])
+
+    if optimal_bb_gw is not None:
+        print("🟢 Bench Boost (BB) Recommendation:")
+        print(f"  - Target Gameweek: **GW {optimal_bb_gw}**")
+        print(f"  - Max Potential Squad Score (15 players): **{bb_potential_score:.2f} MATR Points**")
+        print("  - Note: This is the week where your CURRENT SQUAD generates the largest combined bench score.")
+    else:
+        print("⚪ Bench Boost (BB) Status: Chip not feasible or best week passed.")
+
+    print("\n" + "-" * 50)
+
+    # --- Triple Captain (TC) Report ---
+    optimal_tc_gw = results.get("optimal_tc_gw")
+    tc_potential_score = results.get("tc_potential_captain_score", 0.0)
+    tc_player_data = results.get("tc_player_data", (None, 0.0))  # (ID, Score)
+
+    if optimal_tc_gw is not None:
+        tc_player_id, tc_score = tc_player_data
+        tc_player_name = all_player_data.get(tc_player_id, {}).get('name', f"ID {tc_player_id}")
+
+        print("👑 Triple Captain (TC) Recommendation:")
+        print(f"  - Target Gameweek: **GW {optimal_tc_gw}**")
+        print(f"  - Target Player: **{tc_player_name}**")
+        print(f"  - Max Potential Score (Captain): **{tc_potential_score:.2f} MATR Points**")
+        print("  - Note: This is the week where one player in your CURRENT SQUAD is predicted to haul the most.")
+    else:
+        print("⚪ Triple Captain (TC) Status: Chip not feasible or best week passed.")
+
+    # --- Top Players Report (Focusing on the best BB squad if available) ---
+    top_5_players_data = top_5_bb
+    target_gw = optimal_bb_gw if optimal_bb_gw else optimal_tc_gw
+
+    if top_5_players_data and target_gw:
+        print("\n🌟 Top 5 Targeted Players for Chip Gameweek (GW {}) 🌟".format(target_gw))
+
+        # --- Utility to find fixture difficulty and opponent ---
+        def get_fixture_details(player_id, gw_id):
+            player_team_id = all_player_data.get(player_id, {}).get('team_id')
+            if not player_team_id: return "N/A", "N/A"
+
+            # Filter fixtures for the target GW and player's team
+            player_fixtures = [
+                f for f in fixtures_data
+                if f.get('event') == gw_id and (f.get('team_h') == player_team_id or f.get('team_a') == player_team_id)
+            ]
+
+            details = []
+            for fixture in player_fixtures:
+                is_home = (fixture.get('team_h') == player_team_id)
+                opponent_id = fixture.get('team_a') if is_home else fixture.get('team_h')
+                opponent_name = team_names_map.get(opponent_id, 'Unknown')
+                difficulty = fixture.get('team_h_difficulty') if is_home else fixture.get('team_a_difficulty')
+
+                details.append(f"{opponent_name} ({'H' if is_home else 'A'}, FDR: {difficulty})")
+
+            return " & ".join(details)
+
+        # ----------------------------------------------------
+
+        print("| Rank | Player | Expected MATR | Fixtures (FDR) |")
+        print("|:----:|:-------|:--------------|:---------------|")
+
+        for rank, (player_id, score) in enumerate(top_5_players_data, 1):
+            player_name = all_player_data.get(player_id, {}).get('name', f"ID {player_id}")
+            fixture_info = get_fixture_details(player_id, target_gw)
+
+            print(f"| {rank} | {player_name} | {score:.4f} | {fixture_info} |")
+
+    print("\n" + "=" * 50)
+    print("💡 **STRATEGIC NOTE**")
+    print(
+        "The optimizer assumes you can field a perfect 15-player squad for the target GWs (disregarding transfers/budget).")
+    print("Use your 5-GW MGO to plan the transfers necessary to achieve these squads.")
+    print("=" * 50)
+
+
 # Press the green button in the gutter to run the script.
 FDR_LKFWD = 5       # Limit to 5
+def mgo_optimisation():
+    print(f"\n--- ✅ GW{gw_id} Optimal Squad Selected. Moving to MGO... ---")
+    print(f"\n--- {initial_squad_ids} ---")
+    optimal_squad = optimization_result['squad']
+    total_matr_score = optimization_result['total_matr_score']
+    total_cost_used = sum(p['price'] for p in optimal_squad)
+    initial_gw_s_matr_scores = {}
+    for p in adjusted_matr_rating:
+        # Key is (player_id, gw_id)
+        initial_gw_s_matr_scores[(p['id'], gw_id)] = p['s_matr_score']
+    all_gws = list(range(gw_id, gw_id + (FDR_LKFWD + 1)))
+    gws_to_forecast = list(range(gw_id + 1, gw_id + (FDR_LKFWD + 1)))
+    mgo_forecasted_scores = forecast_s_matr_for_mgo(fpl_data, fixtures_data, available_matr_rating, gws_to_forecast)
+    mgo_scores = {**initial_gw_s_matr_scores, **mgo_forecasted_scores}
+    player_costs, player_positions, player_teams, all_team_ids = prepare_mgo_utility_data(fpl_data)
+    # makes sure players are playing
+    scored_player_ids = {p_id for p_id, gw_t in mgo_scores.keys()}
+    player_ids_selection = [
+        p_id for p_id in scored_player_ids
+        if p_id in available_player_ids
+    ]
+    # C. Run MGO
+    mgo_problem = solve_multi_gameweek_optimization(
+        all_gws=all_gws,
+        all_player_ids=player_ids_selection,
+        initial_squad_ids=initial_squad_ids,
+        player_scores_matr=mgo_scores,
+        player_costs=player_costs,
+        player_positions=player_positions,
+        player_teams=player_teams,
+        all_team_ids=all_team_ids,
+        initial_money_itb=100 - total_cost_used,
+        initial_team_value=total_cost_used,
+        initial_fts=1
+    )
+    # D. Solve MGO
+    mgo_problem.solve()
+    print(f"\n--- 🏆 MGO Solution Status: {LpStatus[mgo_problem.status]} ---")
+    if LpStatus[mgo_problem.status] == 'Optimal':
+        report_mgo_strategy(
+            problem=mgo_problem,
+            mgo_gw_ids=all_gws,
+            optimised_player_data=optimised_player_data,
+            mgo_scores=mgo_scores,
+        )
+    else:
+        print("MGO failed to find an optimal solution.")
+
+
 if __name__ == '__main__':
     cache_bootstrap_filename = 'fpl_bootstrap_data.json'
     fpl_data = None
@@ -709,59 +974,8 @@ if __name__ == '__main__':
                     optimal_squad_gw1 = optimization_result['squad']
                     initial_squad_ids = [p['id'] for p in optimal_squad_gw1]
 
-                    print(f"\n--- ✅ GW{gw_id} Optimal Squad Selected. Moving to MGO... ---")
-                    print(f"\n--- {initial_squad_ids} ---")
-                    optimal_squad = optimization_result['squad']
-                    total_matr_score = optimization_result['total_matr_score']
-                    total_cost_used = sum(p['price'] for p in optimal_squad)
-
-                    initial_gw_s_matr_scores = {}
-                    for p in adjusted_matr_rating:
-                        # Key is (player_id, gw_id)
-                        initial_gw_s_matr_scores[(p['id'], gw_id)] = p['s_matr_score']
-
-                    all_gws = list(range(gw_id, gw_id + (FDR_LKFWD+1)))
-                    gws_to_forecast = list(range(gw_id + 1, gw_id + (FDR_LKFWD+1)))
-                    mgo_forecasted_scores = forecast_s_matr_for_mgo(fpl_data, fixtures_data, available_matr_rating, gws_to_forecast)
-                    mgo_scores = {**initial_gw_s_matr_scores, **mgo_forecasted_scores}
-                    player_costs, player_positions, player_teams, all_team_ids = prepare_mgo_utility_data(fpl_data)
-
-                    # makes sure players are playing
-                    scored_player_ids = {p_id for p_id, gw_t in mgo_scores.keys()}
-                    player_ids_selection = [
-                        p_id for p_id in scored_player_ids
-                        if p_id in available_player_ids
-                    ]
-                    # C. Run MGO
-                    mgo_problem = solve_multi_gameweek_optimization(
-                        all_gws=all_gws,
-                        all_player_ids=player_ids_selection,
-                        initial_squad_ids=initial_squad_ids,
-                        player_scores_matr=mgo_scores,
-                        player_costs=player_costs,
-                        player_positions=player_positions,
-                        player_teams=player_teams,
-                        all_team_ids=all_team_ids,
-                        initial_money_itb=100-total_cost_used,
-                        initial_team_value=total_cost_used,
-                        initial_fts=1
-                    )
-
-                    # D. Solve MGO
-                    mgo_problem.solve()
-
-                    print(f"\n--- 🏆 MGO Solution Status: {LpStatus[mgo_problem.status]} ---")
-
-                    if LpStatus[mgo_problem.status] == 'Optimal':
-                        report_mgo_strategy(
-                            problem=mgo_problem,
-                            all_player_data=fpl_data.get('elements', []),  # Assuming fpl_data is your main data source
-                            mgo_gw_ids=all_gws,
-                            optimised_player_data=optimised_player_data,
-                            mgo_scores=mgo_scores,
-                        )
-                    else:
-                        print("MGO failed to find an optimal solution.")
+                    mgo_optimisation()
+                    chip_optimization()
                 else:
                     print(f"Optimization failed. Status: {optimization_result['status']}")
             else:

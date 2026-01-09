@@ -16,7 +16,7 @@ def print_matr(fpl_data, fixtures_data):
     else:
         print(f"Current Gameweek determined: {current_gw['id']}")
 
-        fixture_run_score = calculate_fixture_run_score(fixtures_data, fpl_data, current_gw['id'], FDR_WINDOW)
+        fixture_run_score = calculate_weighted_fixture_run_score(fixtures_data, fpl_data, current_gw['id'], FDR_WINDOW)
         available_player_ids = get_available_player_ids(fpl_data)
         print(f"Found {len(available_player_ids)} relevant player IDs for history fetching.")
         ids_to_fetch = list(available_player_ids)

@@ -713,10 +713,10 @@ def generate_momentum_report(team_momentum_report: List[Dict[str, Any]],
 
 
 # --- NEW CORE LOGIC: CALCULATE FUTURE DIFFICULTY ---
-def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
-                                bootstrap_data: Dict[str, Any],
-                                current_gw: int,
-                                window: int) -> Dict[int, float]:
+def calculate_weighted_fixture_run_score(fixtures_data: List[Dict[str, Any]],
+                                         bootstrap_data: Dict[str, Any],
+                                         current_gw: int,
+                                         window: int) -> Dict[int, float]:
     """
     Calculates the combined difficulty score for the next 'window' of gameweeks
     for every team. Lower score is better.
@@ -766,6 +766,53 @@ def calculate_fixture_run_score(fixtures_data: List[Dict[str, Any]],
         # Away team: Apply the weight to the difficulty score
         weighted_a_difficulty = fixture['team_a_difficulty'] * weight
         team_fixture_scores[team_a].append(weighted_a_difficulty)
+
+        # 3. Calculate the total (sum) weighted difficulty for the fixture run
+    fixture_run_score: Dict[int, float] = {}
+
+    for team_id, scores in team_fixture_scores.items():
+        # Sum the weighted difficulty scores. The lower the sum, the better (easier and sooner).
+        fixture_run_score[team_id] = sum(scores)
+
+    return fixture_run_score
+
+def calculate_equal_fixture_run_score(fixtures_data: List[Dict[str, Any]],
+                                         bootstrap_data: Dict[str, Any],
+                                         current_gw: int,
+                                         window: int) -> Dict[int, float]:
+    """
+    Calculates the combined difficulty score for the next 'window' of gameweeks
+    for every team. Lower score is better.
+    """
+    team_ids = {team['id'] for team in bootstrap_data.get('teams', [])}
+    team_fixture_scores: Dict[int, List[int]] = {tid: [] for tid in team_ids}
+
+    # Define the range of Gameweeks we care about
+    start_gw = current_gw + 1
+    try:
+        window_size = int(window)
+    except ValueError:
+        print(f"Error: Fixture window '{window}' is not a valid number. Using default of 5.")
+        window_size = 5
+    end_gw = current_gw + int(window_size)
+    all_gws = list(range(start_gw, end_gw + 1))
+
+    upcoming_fixtures = [
+        f for f in fixtures_data
+        if f.get('event') and start_gw <= f['event'] <= end_gw
+    ]
+
+    # 2. Extract difficulty scores for each team
+    for fixture in upcoming_fixtures:
+        if fixture.get('finished', False) or not fixture.get('event'):
+            continue
+
+        team_h = fixture['team_h']
+        team_a = fixture['team_a']
+        h_difficulty = fixture['team_h_difficulty']
+        team_fixture_scores[team_h].append(h_difficulty)
+        a_difficulty = fixture['team_a_difficulty']
+        team_fixture_scores[team_a].append(a_difficulty)
 
         # 3. Calculate the total (sum) weighted difficulty for the fixture run
     fixture_run_score: Dict[int, float] = {}
@@ -1009,3 +1056,33 @@ def calculate_s_matr_score(matr_rating: List[Dict[str, Any]]) -> List[Dict[str, 
         player['s_matr_score'] = round(matr_6 * adjustment_factor, 4)
 
     return matr_rating
+
+
+def extract_team_names_map(bootstrap_data: Dict[str, Any]) -> Dict[int, str]:
+    """
+    Extracts a dictionary mapping Team ID to Team Name from the FPL bootstrap data.
+
+    Args:
+        bootstrap_data: The full data loaded from the FPL 'bootstrap-static' endpoint.
+
+    Returns:
+        A dictionary mapping {Team ID: Team Name}.
+    """
+    team_names_map: Dict[int, str] = {}
+
+    # 1. Check if the 'teams' key exists in the data
+    if 'teams' not in bootstrap_data or not isinstance(bootstrap_data['teams'], list):
+        print("Error: 'teams' list not found in bootstrap data.")
+        return team_names_map
+
+    # 2. Iterate through the list of team dictionaries
+    for team in bootstrap_data['teams']:
+        # The FPL API uses 'id' for the team ID and typically 'name' for the full name.
+        team_id = team.get('id')
+        team_name = team.get('name')
+
+        if team_id is not None and team_name is not None:
+            # Store the mapping: e.g., {1: 'Arsenal'}
+            team_names_map[int(team_id)] = str(team_name)
+
+    return team_names_map

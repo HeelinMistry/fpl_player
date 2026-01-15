@@ -64,7 +64,7 @@ if __name__ == '__main__':
     report_playing_player_stats(optimised_player_list, pos_map, team_map)
 
 
-    FDR_WEIGHTING = 0.1
+    FDR_WEIGHTING = 0.01
     next_gw_id = current_gw['id'] + 1
     selected_squad = optimize_squad(optimised_player_list, target_gw=next_gw_id, fixture_weight=FDR_WEIGHTING)
     report_selected_optimised_squad(selected_squad, fpl)

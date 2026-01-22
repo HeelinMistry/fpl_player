@@ -1,7 +1,7 @@
 import pulp
 
 
-def optimize_squad(player_data, target_gw, budget=100.0, fixture_weight=0.1):
+def optimize_squad(player_data, budget=100.0):
     # 1. Initialize the Problem
     prob = pulp.LpProblem("FPL_Squad_Optimization", pulp.LpMaximize)
 
@@ -15,7 +15,7 @@ def optimize_squad(player_data, target_gw, budget=100.0, fixture_weight=0.1):
     # We maximize: RPPM + (Fixture_Score * Weight)
     # Adjust fixture_weight to prioritize long-term form vs immediate fixtures
     prob += pulp.lpSum([
-        player_vars[p['id']] * (p['rppm'] + (p['fixture_comparison'].get(target_gw, 0) * fixture_weight))
+        player_vars[p['id']] * (p['rppm'])
         # player_vars[p['id']] * (p['rppm'])
         for p in player_data
     ])

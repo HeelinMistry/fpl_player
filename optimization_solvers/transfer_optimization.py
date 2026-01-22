@@ -1,74 +1,81 @@
+from typing import Any
+
 import pulp
 
 
-def optimise_transfer_strategy(current_squad, all_players, future_gws, money_itb=100.0, weight=0.1):
-    # Calculate starting budget
-    budget = money_itb
-    current_squad_ids = []
-    for squad_player in current_squad:
-        budget += squad_player['price']
-        current_squad_ids.append(squad_player['id'])
+def optimise_transfer_strategy(
+        current_squad:  list[dict[str, Any]],
+        all_players: list[dict[str, Any]],
+        money_itb=0.0,
+        transfers_available=1):
+    # 1. Setup Data
+    current_ids = [p['id'] for p in current_squad]
+    # Total Value = Cash ITB + Selling value of current players
+    total_budget = money_itb + sum(p['price'] for p in current_squad)
 
-    prob = pulp.LpProblem("Multi_Period_Transfer_Optimization", pulp.LpMaximize)
     player_ids = [p['id'] for p in all_players]
+    p_stats = {p['id']: p for p in all_players}
 
-    # Map for easy status/points lookup
-    player_stats = {p['id']: p for p in all_players}
+    prob = pulp.LpProblem("Single_Week_Transfer_Optimization", pulp.LpMaximize)
 
-    # 1. Decision Variables
-    x = pulp.LpVariable.dicts("squad", (player_ids, future_gws), cat=pulp.LpBinary)
-    tin = pulp.LpVariable.dicts("transfer_in", (player_ids, future_gws), cat=pulp.LpBinary)
-    tout = pulp.LpVariable.dicts("transfer_out", (player_ids, future_gws), cat=pulp.LpBinary)
+    # 2. Decision Variables
+    x = pulp.LpVariable.dicts("squad", player_ids, cat=pulp.LpBinary)  # Owned (15)
+    s = pulp.LpVariable.dicts("starter", player_ids, cat=pulp.LpBinary)  # Plays (11)
+    tin = pulp.LpVariable.dicts("transfer_in", player_ids, cat=pulp.LpBinary)
+    tout = pulp.LpVariable.dicts("transfer_out", player_ids, cat=pulp.LpBinary)
 
-    # 2. Objective Function
-    # We only count points if status == 'a'.
-    # We subtract a small penalty (0.01) for holding an unavailable player
-    # to force the solver to prefer 'a' players even on the bench.
+    # 3. Objective: Maximize Starting 11 RPPM
+    # We add a tiny bonus for bench players so the bench isn't "random"
     prob += pulp.lpSum([
-        x[p_id][gw] * (
-            (player_stats[p_id]['rppm'] + (player_stats[p_id]['fixture_comparison'].get(gw, 0) * weight))
-            if player_stats[p_id]['status'] == 'a' else -0.01
-        )
-        for p_id in player_ids for gw in future_gws
-    ])
+        s[p_id] * p_stats[p_id]['rppm'] for p_id in player_ids
+        if p_stats[p_id]['status'] == 'a'
+    ]) + pulp.lpSum([x[p_id] * 0.001 for p_id in player_ids])
 
-    # 3. Constraints
-    prev_gw = None
-    for gw in future_gws:
-        # Basic Squad Constraints
-        prob += pulp.lpSum([x[p_id][gw] for p_id in player_ids]) == 15
-        prob += pulp.lpSum([x[p_id][gw] * player_stats[p_id]['price'] for p_id in player_ids]) <= budget
+    # 4. Constraints
+    # Squad Size & Budget
+    prob += pulp.lpSum([x[p_id] for p_id in player_ids]) == 15
+    prob += pulp.lpSum([x[p_id] * p_stats[p_id]['price'] for p_id in player_ids]) <= total_budget
 
-        # Position Constraints
-        for pos in [1, 2, 3, 4]:
-            req = {1: 2, 2: 5, 3: 5, 4: 3}[pos]
-            prob += pulp.lpSum([x[p_id][gw] for p_id in player_ids if player_stats[p_id]['position_id'] == pos]) == req
+    # Linkage: Can only start if owned
+    for p_id in player_ids:
+        prob += s[p_id] <= x[p_id]
 
-        # NEW: Availability Policy - Cannot TRANSFER IN an unavailable player
-        prob += pulp.lpSum([
-            tin[p_id][gw] for p_id in player_ids if player_stats[p_id]['status'] != 'a'
-        ]) == 0
+    # Transfers Available (Usually 1)
+    prob += pulp.lpSum([tin[p_id] for p_id in player_ids]) <= transfers_available
+    # Ensure In count matches Out count to keep squad at 15
+    prob += pulp.lpSum([tin[p_id] for p_id in player_ids]) == pulp.lpSum([tout[p_id] for p_id in player_ids])
 
-        # Transfer Limit: Max 1 per week
-        prob += pulp.lpSum([tin[p_id][gw] for p_id in player_ids]) <= 1
+    # FIXED OWNERSHIP LOGIC
+    for p_id in player_ids:
+        is_in_current = 1 if p_id in current_ids else 0
+        # New Squad = Old Squad + In - Out
+        prob += x[p_id] == is_in_current + tin[p_id] - tout[p_id]
 
-        # Logic: Ownership Flow
-        for p_id in player_ids:
-            if prev_gw is None:
-                is_in_initial = 1 if p_id in current_squad_ids else 0
-                prob += x[p_id][gw] == is_in_initial + tin[p_id][gw] - tout[p_id][gw]
-            else:
-                prob += x[p_id][gw] == x[p_id][prev_gw] + tin[p_id][gw] - tout[p_id][gw]
+    # Position Constraints (Squad)
+    for pos, req in {1: 2, 2: 5, 3: 5, 4: 3}.items():
+        prob += pulp.lpSum([x[p_id] for p_id in player_ids if p_stats[p_id]['position_id'] == pos]) == req
 
-        prev_gw = gw
+    # Formation Constraints (Starting 11)
+    prob += pulp.lpSum([s[p_id] for p_id in player_ids]) == 11
+    prob += pulp.lpSum([s[p_id] for p_id in player_ids if p_stats[p_id]['position_id'] == 1]) == 1
+    prob += pulp.lpSum([s[p_id] for p_id in player_ids if p_stats[p_id]['position_id'] == 2]) >= 3
+    prob += pulp.lpSum([s[p_id] for p_id in player_ids if p_stats[p_id]['position_id'] == 3]) >= 3
+    prob += pulp.lpSum([s[p_id] for p_id in player_ids if p_stats[p_id]['position_id'] == 4]) >= 1
 
+    # Team Constraint
+    teams = set(p['team_id'] for p in all_players)
+    for t_id in teams:
+        prob += pulp.lpSum([x[p_id] for p_id in player_ids if p_stats[p_id]['team_id'] == t_id]) <= 3
+
+    # Uncomment to remove unavailable people
+    # Availability: Cannot buy injured/unavailable players
+    # prob += pulp.lpSum([tin[p_id] for p_id in player_ids if p_stats[p_id]['status'] != 'a']) == 0
+
+    # 5. Solve
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
 
-    # 4. Extract Plan
-    transfer_plan = {}
-    for gw in future_gws:
-        transfer_plan[gw] = {
-            "in": [p_id for p_id in player_ids if tin[p_id][gw].varValue == 1],
-            "out": [p_id for p_id in player_ids if tout[p_id][gw].varValue == 1]
-        }
-    return transfer_plan
+    # 6. Result Extraction
+    return {
+        "in": [p_id for p_id in player_ids if tin[p_id].varValue == 1],
+        "out": [p_id for p_id in player_ids if tout[p_id].varValue == 1]
+    }

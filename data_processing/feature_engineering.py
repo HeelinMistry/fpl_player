@@ -122,10 +122,7 @@ def calculate_team_fixture_features(
     return upcoming_fixtures_ticker
 
 # Player enhancement
-
-# can adjust it will average it out and use rppm
-MOMENTUM_WINDOWS = [3]
-def calculate_momentum_scores(player_history_data: Dict[int, List[Dict[str, Any]]]) -> Dict[int, Dict[str, float | int]]:
+def calculate_momentum_scores(player_history_data: Dict[int, List[Dict[str, Any]]], momentum_window:list) -> Dict[int, Dict[str, float | int]]:
     """
     Calculates Points Per 90 Minutes (PP90M) for individual players over defined windows,
     using minutes played for a more accurate efficiency measure.
@@ -134,9 +131,9 @@ def calculate_momentum_scores(player_history_data: Dict[int, List[Dict[str, Any]
     for player_id, history in player_history_data.items():
         player_momentum[player_id] = {'id': player_id}
         finished_history = [h for h in history if h.get('finished', True)]
-        if not finished_history:
-            continue
-        for window in MOMENTUM_WINDOWS:
+        # if not finished_history:
+        #     continue
+        for window in momentum_window:
             # Select the most recent 'window' number of finished gameweeks
             recent_history = finished_history[-window:]
             # New: Sum total minutes and total points
@@ -150,8 +147,9 @@ def calculate_momentum_scores(player_history_data: Dict[int, List[Dict[str, Any]
             if total_minutes > 0:
                 # Calculate PP90M: (Total Points / Total Minutes) * 90
                 # This correctly accounts for players who play < 90 minutes across the window.
-                minutes_played = window * 90
-                pp90m_score = total_points * (total_minutes/minutes_played)
+                # minutes_played_ratio = total_minutes / (window * 90)
+                minutes_played_ratio = total_minutes / (window * 90)
+                pp90m_score = total_points * minutes_played_ratio
             else:
                 # If total_minutes is 0 (player was absent/not in the squad), set score to 0.
                 pp90m_score = 0.0
@@ -165,6 +163,7 @@ def calculate_momentum_scores(player_history_data: Dict[int, List[Dict[str, Any]
 
 
 def prepare_player_optimisation(player_momentum: Dict[int, Dict[str, float | int]],
+                                momentum_window: list,
                                 fixture_run_score: dict[int, list[dict[str, Any]]],
                                 bootstrap_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -203,7 +202,7 @@ def prepare_player_optimisation(player_momentum: Dict[int, Dict[str, float | int
 
         rppm = 0.0
         rppm_report_key = f'rppm'
-        for window in MOMENTUM_WINDOWS:
+        for window in momentum_window:
             ppm_key_from_momentum = f'GW{window}_PP90M'  # e.g., 'GW6_PP90M'
             player_ppm = p_momentum[ppm_key_from_momentum]
 

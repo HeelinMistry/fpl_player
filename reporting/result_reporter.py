@@ -145,14 +145,15 @@ def report_injury_suspension_status(
         # Truncate news to fit the table width
         news_snippet = player['news'][:40].replace('\n', ' ')
 
-        print("{:<4} {:<20} {:<8} {:<8} {:<8} £{:<5.1f} {:<7.1f} {:<6} {:<40}".format(
+        print("{:<4} {:<20} {:<8} {:<8} {:<8} £{:<5.1f} {:<7.1f} {:<6}  {:<6} {:<40}".format(
             position,
             player['web_name'],
             team_short,
             player['status'],
             player['chance'],
             player['now_cost'],  # Already divided by 10 in the processor
-            player['ppg'],
+            player['points_per_game'],
+            player['points_per_minute'],
             player['selected_by_percent'],
             news_snippet
         ))
@@ -366,16 +367,15 @@ def report_player_momentum_windows(
 
     # 4. Organize and Sort
     # Put 'Name' at the start for readability
-    cols = [c for c in df.columns]
-    df = df[cols].sort_values(by='GW3_PP90M', ascending=False)
+    # cols = [c for c in df.columns]
+    # df = df[cols].sort_values(by='GW3_PP90M', ascending=False)
 
     # Use floatfmt to control decimal places across the whole table
     print(df.head(15).to_markdown(index=False, floatfmt=".0f"))
 
 
 def report_selected_optimised_squad(selected_squad: List[Dict[str, Any]],
-                                    bootstrap_data: Dict[str, Any],
-                                    target_gw: int = 22) -> None:
+                                    bootstrap_data: Dict[str, Any]) -> None:
     # 1. Create Lookup Maps
     player_map = {p['id']: p['web_name'] for p in bootstrap_data['elements']}
     team_map = {t['id']: t['name'] for t in bootstrap_data['teams']}
@@ -390,8 +390,7 @@ def report_selected_optimised_squad(selected_squad: List[Dict[str, Any]],
             "Team": team_map.get(p['team_id'], "Unknown"),
             "Status": p['status'],
             "Price": p['price'],
-            "RPPM": p['rppm'],
-            f"GW{target_gw}_Favor": p['fixture_comparison'].get(target_gw, 0)
+            "RPPM": p['rppm']
         })
 
     # 3. Create DataFrame and Sort
@@ -403,7 +402,7 @@ def report_selected_optimised_squad(selected_squad: List[Dict[str, Any]],
 
     # 4. Print Header and Table
     print("\n" + "=" * 60)
-    print(f"🏆 PULP OPTIMISED SQUAD (Target GW: {target_gw})")
+    print(f"🏆 PULP OPTIMISED SQUAD")
     print("=" * 60)
     print(df.to_markdown(index=False, floatfmt=".1f"))
 
@@ -447,49 +446,17 @@ def report_final_lineup(starters, bench, captain, vice_captain, bootstrap_data, 
     print(df.to_markdown(index=False))
 
 
-def report_transfer_strategy(suggestions, bootstrap_data, future_gws):
-    player_names = {p['id']: p['web_name'] for p in bootstrap_data['elements']}
-    team_names = {t['id']: t['name'] for t in bootstrap_data['teams']}
-
-    print(f"\n🔄 RECOMMENDED TRANSFERS (Look-ahead: GW{future_gws[0]} - GW{future_gws[-1]})")
-    print("=" * 80)
-
-    report_list = []
-    for move in suggestions:
-        p_out = move['OUT']
-        p_in = move['IN']
-
-        report_list.append({
-            "Move": "SELL",
-            "Player": player_names[p_out['id']],
-            "Team": team_names[p_out['team_id']],
-            "Window EV": round(p_out['window_ev'], 1),
-            "Price": p_out['price']
-        })
-        report_list.append({
-            "Move": "BUY",
-            "Player": player_names[p_in['id']],
-            "Team": team_names[p_in['team_id']],
-            "Window EV": round(p_in['window_ev'], 1),
-            "Price": p_in['price']
-        })
-        report_list.append(
-            {"Move": "---", "Player": f"NET GAIN: +{move['Net_Gain']}", "Team": "", "Window EV": "", "Price": ""})
-
-    print(pd.DataFrame(report_list).to_markdown(index=False))
-
 def report_multi_week_transfers(plan, bootstrap_data):
     all_players = bootstrap_data['elements']
     p_map = {p['id']: p['web_name'] for p in all_players}
 
     print("\n🗓️ MULTI-WEEK TRANSFER ROADMAP")
     print("=" * 50)
-    for gw, moves in plan.items():
-        if not moves['in'] and not moves['out']:
-            print(f"GW{gw}: 😴 No transfers recommended (Hold)")
-        else:
-            for i in range(len(moves['in'])):
-                p_in = p_map[moves['in'][i]]
-                p_out = p_map[moves['out'][i]]
-                print(f"GW{gw}: 🔄 {p_out} ➡️ {p_in}")
+    if not plan['in'] and not plan['out']:
+        print(f"😴 No transfers recommended (Hold)")
+    else:
+        for i in range(len(plan['in'])):
+            p_in = p_map[plan['in'][i]]
+            p_out = p_map[plan['out'][i]]
+            print(f"🔄 {p_out} ➡️ {p_in}")
     print("=" * 50)

@@ -78,7 +78,10 @@ def get_impacted_player_list(bootstrap_data: Dict[str, Any]) -> List[Dict[str, A
                 ppg_float = 0.0
 
             chance = player.get('chance_of_playing_next_round')
-
+            if player['minutes'] > 0:
+                points_per_minute =  player['total_points']/ (player['minutes'] / 90)
+            else:
+                points_per_minute = 0.0
             # Create a simplified dictionary for the reporter
             impacted_players.append({
                 'id': player['id'],
@@ -88,7 +91,8 @@ def get_impacted_player_list(bootstrap_data: Dict[str, Any]) -> List[Dict[str, A
                 'status': player['status'].upper(),
                 'chance': f"{chance}%" if chance is not None else "N/A",
                 'now_cost': player['now_cost'] / 10.0,  # Convert to actual price (e.g., 50 -> 5.0)
-                'ppg': ppg_float,
+                'points_per_game': ppg_float,
+                'points_per_minute': points_per_minute,
                 'total_points': player['total_points'],
                 'selected_by_percent': player['selected_by_percent'],
                 'news': player['news'],
@@ -168,6 +172,10 @@ def get_available_player_list(bootstrap_data: Dict[str, Any]) -> List[Dict[str, 
             except ValueError:
                 ppg_float = 0.0
 
+            if player['minutes'] > 0:
+                points_per_minute =  player['total_points']/ (player['minutes'] / 90)
+            else:
+                points_per_minute = 0.0
             # Create a simplified dictionary for the reporter
             available_players.append({
                 'id': player['id'],
@@ -176,9 +184,11 @@ def get_available_player_list(bootstrap_data: Dict[str, Any]) -> List[Dict[str, 
                 'position_id': player['element_type'],
                 'form': player['form'],
                 'price': player['now_cost'] / 10.0,
-                'ppg': ppg_float,
+                'points_per_game': ppg_float,
                 'total_points': player['total_points'],
                 'event_points': player['event_points'],
+                'minutes': player['minutes'],
+                'points_per_minute': points_per_minute,
                 'selected_by_percent': player['selected_by_percent'],
             })
 
@@ -206,6 +216,11 @@ def get_playing_player_list(bootstrap_data: Dict[str, Any]) -> List[Dict[str, An
             ppg_float = float(player['points_per_game'])
         except ValueError:
             ppg_float = 0.0
+
+        if player['minutes'] > 0:
+            points_per_minute = player['total_points'] / (player['minutes'] / 90)
+        else:
+            points_per_minute = 0.0
         available_players.append({
             'id': player['id'],
             'web_name': player['web_name'],
@@ -214,9 +229,11 @@ def get_playing_player_list(bootstrap_data: Dict[str, Any]) -> List[Dict[str, An
             'status': player['status'],
             'form': player['form'],
             'price': player['now_cost'] / 10.0,
-            'ppg': ppg_float,
+            'points_per_game': ppg_float,
+            'minutes': player['minutes'],
             'total_points': player['total_points'],
             'event_points': player['event_points'],
+            'points_per_minute': points_per_minute,
             'selected_by_percent': player['selected_by_percent'],
         })
 
@@ -261,15 +278,18 @@ def process_team_strength_indices(bootstrap_data: Dict[str, Any]) -> Dict[int, D
     return team_comparison_data
 
 def get_optimized_player_stats(playing_player_stats: List[Dict[str, Any]],
-                               player_momentum: Dict[int, Dict[str, float | int]]) -> List[Dict[str, Any]]:
+                               player_momentum: Dict[int, Dict[str, float | int]],
+                               momentum_window: List) -> List[Dict[str, Any]]:
     optimized_players = []
-    for player in playing_player_stats:
-        player['GW3_PP90M'] = player_momentum[player['id']]['GW3_PP90M']
-        # if player['GW3_PP90M'] > player['ppg']:
-        optimized_players.append(player)
+    for momentum in momentum_window:
+        momentum_key = f'GW{momentum}_PP90M'
+        for player in playing_player_stats:
+            player[momentum_key] = player_momentum[player['id']][momentum_key]
+            # if player['GW3_PP90M'] > player['ppg']:
+            optimized_players.append(player)
     return sorted(
         optimized_players,
-        key=lambda p: p['GW3_PP90M'],
+        key=lambda p: p[momentum_key],
         reverse=True
     )
 

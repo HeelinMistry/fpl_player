@@ -450,7 +450,7 @@ def report_multi_week_transfers(plan, bootstrap_data):
     all_players = bootstrap_data['elements']
     p_map = {p['id']: p['web_name'] for p in all_players}
 
-    print("\n🗓️ MULTI-WEEK TRANSFER ROADMAP")
+    print("\n🗓️ TRANSFER ROADMAP")
     print("=" * 50)
     if not plan['in'] and not plan['out']:
         print(f"😴 No transfers recommended (Hold)")
